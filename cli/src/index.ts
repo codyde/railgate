@@ -17,6 +17,7 @@ import {
   type WsCloseMessage,
 } from "@railgate/shared";
 import { configPath, resolveConfig } from "./config.js";
+import { runSetup } from "./setup.js";
 
 // ── Spinner ──
 
@@ -106,6 +107,14 @@ program
       await startTunnel(cfg.relayUrl, cfg.token, localPort, opts.subdomain);
     }
   );
+
+program
+  .command("setup")
+  .description("Configure railgate by deploying a relay or connecting to an existing one")
+  .option("--manual", "Skip the browser deploy step and enter a relay URL/token directly")
+  .action(async (opts: { manual?: boolean }) => {
+    await runSetup(opts);
+  });
 
 program.parse();
 

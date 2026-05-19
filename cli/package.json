@@ -11,8 +11,10 @@
     "dev": "tsx src/index.ts"
   },
   "dependencies": {
+    "@clack/prompts": "^1.4.0",
     "@railgate/shared": "*",
     "commander": "^12.1.0",
+    "open": "^11.0.0",
     "ws": "^8.18.0"
   },
   "devDependencies": {
