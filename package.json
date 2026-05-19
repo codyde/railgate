@@ -1,0 +1,9 @@
+{
+  "name": "railgate",
+  "private": true,
+  "workspaces": [
+    "shared",
+    "relay",
+    "cli"
+  ]
+}
