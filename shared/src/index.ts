@@ -7,6 +7,7 @@ export interface RegisterMessage {
   type: "register";
   subdomain?: string;
   localPort: number;
+  protocolVersion: number;
 }
 
 /** Server confirms tunnel registration */
@@ -126,3 +127,7 @@ export function serializeMessage(
 export const CONTROL_PATH = "/_tunnel/connect";
 
 export const HEARTBEAT_INTERVAL_MS = 30_000;
+
+export const PROTOCOL_VERSION = 1;
+
+export const WHOAMI_PATH = "/_railgate/whoami";

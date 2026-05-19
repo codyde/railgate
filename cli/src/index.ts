@@ -6,6 +6,7 @@ import http from "http";
 import {
   CONTROL_PATH,
   HEARTBEAT_INTERVAL_MS,
+  PROTOCOL_VERSION,
   parseMessage,
   serializeMessage,
   type ServerMessage,
@@ -99,6 +100,7 @@ async function startTunnel(
   subdomain?: string
 ): Promise<void> {
   const wsUrl = `${relayUrl}${CONTROL_PATH}`;
+  const token = process.env.RAILGATE_TOKEN;
   const spinner = createSpinner();
   let reconnectAttempts = 0;
   let activeWs: WebSocket | null = null;
@@ -126,8 +128,22 @@ async function startTunnel(
   spinner.start(`Connecting to relay at ${relayUrl}...`);
 
   const connect = () => {
-    const ws = new WebSocket(wsUrl);
+    const ws = new WebSocket(
+      wsUrl,
+      token ? { headers: { Authorization: `Bearer ${token}` } } : undefined
+    );
     activeWs = ws;
+
+    ws.on("unexpected-response", (_req, res) => {
+      if (res.statusCode === 401) {
+        spinner.stop();
+        console.error("");
+        console.error("  \x1b[31m✗ Authentication failed.\x1b[0m The relay rejected your token.");
+        console.error("    Check RAILGATE_TOKEN matches the one configured on the relay.");
+        console.error("");
+        process.exit(1);
+      }
+    });
 
     ws.on("open", () => {
       spinner.update("Registering tunnel...");
@@ -136,6 +152,7 @@ async function startTunnel(
           type: "register",
           subdomain,
           localPort,
+          protocolVersion: PROTOCOL_VERSION,
         })
       );
     });

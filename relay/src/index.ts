@@ -3,6 +3,8 @@ import { WebSocketServer, WebSocket } from "ws";
 import {
   CONTROL_PATH,
   HEARTBEAT_INTERVAL_MS,
+  PROTOCOL_VERSION,
+  WHOAMI_PATH,
   generateSubdomain,
   parseMessage,
   serializeMessage,
@@ -39,14 +41,47 @@ const PORT = parseInt(process.env.PORT || "3000", 10);
 
 // The base domain for tunnel URLs. In production this would be your wildcard domain.
 // e.g., "tunnels.yourdomain.com" so tunnels are "abc123.tunnels.yourdomain.com"
-const BASE_DOMAIN = process.env.BASE_DOMAIN || `localhost:${PORT}`;
+const BASE_DOMAIN =
+  process.env.BASE_DOMAIN ||
+  process.env.RAILWAY_PUBLIC_DOMAIN ||
+  `localhost:${PORT}`;
 const PROTOCOL = process.env.PROTOCOL || "http";
+
+const TOKEN = process.env.RAILGATE_TOKEN;
+const OPEN_MODE = !TOKEN;
+
+function checkAuth(req: IncomingMessage): boolean {
+  if (OPEN_MODE) return true;
+  const header = req.headers.authorization;
+  if (!header || !header.startsWith("Bearer ")) return false;
+  return header.slice("Bearer ".length) === TOKEN;
+}
 
 // ── HTTP Server ──
 
 const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
   const host = req.headers.host || "";
   const url = req.url || "/";
+
+  // Setup wizard verifies the relay by hitting this with a Bearer token.
+  if (url === WHOAMI_PATH) {
+    if (!checkAuth(req)) {
+      res.writeHead(401, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: false, error: "Invalid token" }));
+      return;
+    }
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(
+      JSON.stringify({
+        ok: true,
+        baseDomain: BASE_DOMAIN,
+        protocol: PROTOCOL,
+        protocolVersion: PROTOCOL_VERSION,
+        openMode: OPEN_MODE,
+      })
+    );
+    return;
+  }
 
   // Try subdomain routing first (requires wildcard custom domain),
   // then fall back to path-based routing: /_t/<subdomain>/rest/of/path
@@ -134,6 +169,11 @@ server.on("upgrade", (req, socket, head) => {
 
   // Control channel connections go to the main WSS
   if (url.pathname === CONTROL_PATH) {
+    if (!checkAuth(req)) {
+      socket.write("HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n");
+      socket.destroy();
+      return;
+    }
     wss.handleUpgrade(req, socket, head, (ws) => {
       wss.emit("connection", ws, req);
     });
@@ -257,6 +297,16 @@ wss.on("connection", (ws: WebSocket) => {
 
     switch (msg.type) {
       case "register": {
+        if (msg.protocolVersion !== PROTOCOL_VERSION) {
+          ws.send(
+            serializeMessage({
+              type: "error",
+              message: `Protocol version mismatch (relay: ${PROTOCOL_VERSION}, client: ${msg.protocolVersion ?? "unknown"}). Run: npm install -g railgate@latest`,
+            })
+          );
+          ws.close(1002, "Protocol version mismatch");
+          return;
+        }
         // Assign or validate subdomain
         let subdomain = msg.subdomain?.toLowerCase().replace(/[^a-z0-9-]/g, "");
         if (subdomain && tunnels.has(subdomain)) {
@@ -427,5 +477,13 @@ function sendRequestToTunnel(
 server.listen(PORT, () => {
   console.log(`[railgate] relay server listening on port ${PORT}`);
   console.log(`[railgate] base domain: ${BASE_DOMAIN}`);
-  console.log(`[railgate] tunnel control: ws://${BASE_DOMAIN}${CONTROL_PATH}`);
+  console.log(`[railgate] protocol version: ${PROTOCOL_VERSION}`);
+  if (OPEN_MODE) {
+    console.warn(
+      `[railgate] WARNING: RAILGATE_TOKEN not set — relay is in OPEN MODE. Anyone who can reach this URL can register tunnels.`
+    );
+  } else {
+    console.log(`[railgate] auth: token required`);
+  }
+  console.log(`[railgate] tunnel control: ${PROTOCOL === "https" ? "wss" : "ws"}://${BASE_DOMAIN}${CONTROL_PATH}`);
 });
