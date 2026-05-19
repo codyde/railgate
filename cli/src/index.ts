@@ -16,8 +16,7 @@ import {
   type WsDataMessage,
   type WsCloseMessage,
 } from "@railgate/shared";
-
-const DEFAULT_RELAY = "wss://tunnel.buildwithcode.io";
+import { configPath, resolveConfig } from "./config.js";
 
 // ── Spinner ──
 
@@ -78,17 +77,35 @@ program
   .command("http")
   .description("Expose a local HTTP server")
   .argument("<port>", "Local port to expose")
-  .option("-r, --relay <url>", "Relay server URL", DEFAULT_RELAY)
+  .option("-r, --relay <url>", "Relay server URL (overrides saved config)")
+  .option("-t, --token <value>", "Relay auth token (overrides saved config)")
   .option("-s, --subdomain <name>", "Request a specific subdomain")
-  .action(async (port: string, opts: { relay: string; subdomain?: string }) => {
-    const localPort = parseInt(port, 10);
-    if (isNaN(localPort)) {
-      console.error("Error: port must be a number");
-      process.exit(1);
-    }
+  .action(
+    async (
+      port: string,
+      opts: { relay?: string; token?: string; subdomain?: string }
+    ) => {
+      const localPort = parseInt(port, 10);
+      if (isNaN(localPort)) {
+        console.error("Error: port must be a number");
+        process.exit(1);
+      }
 
-    await startTunnel(opts.relay, localPort, opts.subdomain);
-  });
+      const cfg = resolveConfig({ relay: opts.relay, token: opts.token });
+      if (!cfg) {
+        console.error("");
+        console.error("  No relay configured.");
+        console.error(`  Run \x1b[1mnpx railgate setup\x1b[0m to deploy a relay,`);
+        console.error(`  or pass \x1b[1m--relay <url>\x1b[0m to use one directly.`);
+        console.error("");
+        console.error(`  Looked for config at: ${configPath()}`);
+        console.error("");
+        process.exit(1);
+      }
+
+      await startTunnel(cfg.relayUrl, cfg.token, localPort, opts.subdomain);
+    }
+  );
 
 program.parse();
 
@@ -96,11 +113,11 @@ program.parse();
 
 async function startTunnel(
   relayUrl: string,
+  token: string | undefined,
   localPort: number,
   subdomain?: string
 ): Promise<void> {
   const wsUrl = `${relayUrl}${CONTROL_PATH}`;
-  const token = process.env.RAILGATE_TOKEN;
   const spinner = createSpinner();
   let reconnectAttempts = 0;
   let activeWs: WebSocket | null = null;
