@@ -3,8 +3,8 @@ import { createServer, type Server } from "http";
 import type { AddressInfo } from "net";
 import fs from "fs";
 import path from "path";
-import open from "open";
 import { configDir } from "../config.js";
+import { openUrl } from "../util/open-url.js";
 
 /**
  * Public OAuth client (PKCE-only, no secret). Safe to embed in a published
@@ -256,7 +256,7 @@ export async function loginWithBrowser(opts: {
   // Open the browser. If it fails (headless, SSH), the user can paste the
   // URL the caller already printed.
   try {
-    await open(authUrl);
+    await openUrl(authUrl);
   } catch {
     // No-op — URL was already surfaced via onPromptUrl.
   }

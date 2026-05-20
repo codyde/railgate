@@ -9,8 +9,8 @@ import {
   isCancel,
 } from "@clack/prompts";
 import { randomBytes } from "crypto";
-import open from "open";
 import { WHOAMI_PATH } from "@railgate/shared";
+import { openUrl } from "./util/open-url.js";
 import { saveConfig, configPath, type RailgateConfig } from "./config.js";
 import {
   deployRailgateRelay,
@@ -214,7 +214,7 @@ async function runBrowserSetup(): Promise<void> {
     "Deploy the relay"
   );
   try {
-    await open(templateUrl);
+    await openUrl(templateUrl);
   } catch {
     note(`Couldn't open your browser automatically. Open this URL manually:\n${templateUrl}`, "Browser");
   }

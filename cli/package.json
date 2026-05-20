@@ -1,6 +1,6 @@
 {
   "name": "railgate",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Self-hostable localhost tunnel — deploy a Railway relay in one command, then expose any port over a public URL.",
   "type": "module",
   "bin": {
@@ -16,7 +16,7 @@
   },
   "scripts": {
     "build": "tsc",
-    "bundle": "esbuild src/index.ts --bundle --platform=node --format=cjs --target=node20 --outfile=dist/railgate.cjs --external:@clack/prompts --external:commander --external:ws --external:open && chmod +x dist/railgate.cjs",
+    "bundle": "esbuild src/index.ts --bundle --platform=node --format=cjs --target=node20 --outfile=dist/railgate.cjs --external:@clack/prompts --external:commander --external:ws && chmod +x dist/railgate.cjs",
     "prepack": "npm run build && npm run bundle",
     "dev": "tsx src/index.ts"
   },
@@ -43,7 +43,6 @@
   "dependencies": {
     "@clack/prompts": "^1.4.0",
     "commander": "^12.1.0",
-    "open": "^11.0.0",
     "ws": "^8.18.0"
   },
   "devDependencies": {
