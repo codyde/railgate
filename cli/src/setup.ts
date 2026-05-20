@@ -12,8 +12,12 @@ import { randomBytes } from "crypto";
 import open from "open";
 import { WHOAMI_PATH } from "@railgate/shared";
 import { saveConfig, configPath, type RailgateConfig } from "./config.js";
+import {
+  deployRailgateRelay,
+  RAILGATE_TEMPLATE_CODE,
+} from "./railway/deploy.js";
 
-const TEMPLATE_URL = "https://railway.com/deploy/mBm3DX";
+const TEMPLATE_URL = `https://railway.com/deploy/${RAILGATE_TEMPLATE_CODE}`;
 
 interface NormalizedUrl {
   httpUrl: string;
@@ -105,15 +109,97 @@ async function exitIfCancel<T>(value: T | symbol): Promise<T> {
   return value as T;
 }
 
-export async function runSetup(opts: { manual?: boolean }): Promise<void> {
+export async function runSetup(opts: {
+  manual?: boolean;
+  browser?: boolean;
+}): Promise<void> {
   if (opts.manual) {
     await runManualSetup();
+  } else if (opts.browser) {
+    await runBrowserSetup();
   } else {
-    await runTemplateSetup();
+    await runAutoSetup();
   }
 }
 
-async function runTemplateSetup(): Promise<void> {
+/**
+ * The default flow: OAuth into Railway, create a project, deploy the
+ * railgate template, poll the workflow, capture the public domain, verify,
+ * and save config. Zero manual paste steps.
+ */
+async function runAutoSetup(): Promise<void> {
+  intro("Railgate setup");
+
+  const token = generateToken();
+  note(
+    `${token}\n\nThis token will be set as RAILGATE_TOKEN on your relay and saved locally.\nTreat it like a password — anyone with it can register tunnels on your relay.`,
+    "Generated token"
+  );
+
+  const projectNameInput = await exitIfCancel(
+    await text({
+      message: "Railway project name",
+      placeholder: `railgate-${randomBytes(3).toString("hex")}`,
+      initialValue: `railgate-${randomBytes(3).toString("hex")}`,
+      validate: (v) => (!v ? "Project name is required" : undefined),
+    })
+  );
+
+  let lastBrowserUrl: string | null = null;
+  const s = spinner();
+  s.start("Authenticating with Railway");
+
+  try {
+    const deployed = await deployRailgateRelay(token, projectNameInput, {
+      onPhase: (msg) => s.message(msg),
+      onPromptUrl: (url) => {
+        lastBrowserUrl = url;
+        // Pause the spinner long enough to surface the URL in case the
+        // browser launch failed silently (SSH session, headless WSL, etc.).
+        s.message(
+          `Opening Railway to authorize...\n  If the browser didn't open, visit:\n  ${url}`
+        );
+      },
+    });
+
+    s.message(`Verifying relay at ${deployed.httpUrl}`);
+    const whoami = await verifyRelay(deployed.httpUrl, token, 90_000);
+    if (!whoami.ok) {
+      s.stop("Verification failed");
+      cancel(
+        `The relay deployed but didn't respond to whoami: ${whoami.error}.\nIt may still be warming up — try \`npx railgate http <port>\` in a minute.`
+      );
+      process.exit(1);
+    }
+    s.stop(`Relay live at ${whoami.baseDomain}`);
+
+    const cfg: RailgateConfig = {
+      relayUrl: deployed.wsUrl,
+      token,
+      baseDomain: whoami.baseDomain,
+      protocol: whoami.protocol,
+      protocolVersion: whoami.protocolVersion,
+    };
+    saveConfig(cfg);
+
+    outro(`Saved to ${configPath()}\n\nTry it: npx railgate http 3000`);
+  } catch (err) {
+    s.stop("Setup failed");
+    const message = (err as Error).message ?? String(err);
+    const hint = lastBrowserUrl
+      ? `\nIf the Railway auth never opened, you can re-run setup or try \`railgate setup --browser\` for the manual deploy flow.`
+      : `\nYou can fall back to \`railgate setup --browser\` for a manual deploy, or \`railgate setup --manual\` if you've already deployed a relay yourself.`;
+    cancel(`${message}${hint}`);
+    process.exit(1);
+  }
+}
+
+/**
+ * Legacy browser hand-off flow. Opens Railway's deploy URL, user pastes the
+ * token in, deploys, pastes the URL back. Kept as `--browser` for headless
+ * environments or as a fallback when the auto flow can't be used.
+ */
+async function runBrowserSetup(): Promise<void> {
   intro("Railgate setup");
 
   const token = generateToken();

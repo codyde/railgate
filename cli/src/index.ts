@@ -111,8 +111,9 @@ program
 program
   .command("setup")
   .description("Configure railgate by deploying a relay or connecting to an existing one")
-  .option("--manual", "Skip the browser deploy step and enter a relay URL/token directly")
-  .action(async (opts: { manual?: boolean }) => {
+  .option("--manual", "Skip everything and enter a relay URL/token directly")
+  .option("--browser", "Use the legacy browser-handoff flow instead of OAuth (paste-back)")
+  .action(async (opts: { manual?: boolean; browser?: boolean }) => {
     await runSetup(opts);
   });
 
