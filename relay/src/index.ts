@@ -45,7 +45,11 @@ const BASE_DOMAIN =
   process.env.BASE_DOMAIN ||
   process.env.RAILWAY_PUBLIC_DOMAIN ||
   `localhost:${PORT}`;
-const PROTOCOL = process.env.PROTOCOL || "http";
+// When running on Railway (or anywhere the public domain is set explicitly),
+// default to https so the wizard saves wss:// for the WebSocket URL.
+const PROTOCOL =
+  process.env.PROTOCOL ||
+  (process.env.RAILWAY_PUBLIC_DOMAIN || process.env.BASE_DOMAIN ? "https" : "http");
 
 const TOKEN = process.env.RAILGATE_TOKEN;
 const OPEN_MODE = !TOKEN;

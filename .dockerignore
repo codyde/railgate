@@ -1,0 +1,13 @@
+.git
+.gitignore
+.claude
+LICENSE
+
+# Local install/build artifacts — the Docker build does its own
+node_modules
+**/node_modules
+**/dist
+**/*.tsbuildinfo
+
+# Not needed by the relay image
+cli
