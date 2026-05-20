@@ -200,9 +200,22 @@ async function startTunnel(
           sessionStartTime = Date.now();
           sessionRequestCount = 0;
 
+          // Railway's *.up.railway.app cert only covers one level of subdomain
+          // (cert at `*.up.railway.app` matches `foo.up.railway.app` but not
+          // `bar.foo.up.railway.app`). Our subdomain-form URL adds a second
+          // level under the relay's auto-assigned domain — so it always trips
+          // a TLS mismatch on Railway-default deploys. Prefer the path form
+          // there. Users on a custom domain with their own wildcard cert get
+          // the prettier subdomain URL as primary.
+          const wildcardSafe = !/\.up\.railway\.app(?::|\/|$)/i.test(msg.url);
+          const primary = wildcardSafe ? msg.url : (msg.pathUrl ?? msg.url);
+          const secondary = wildcardSafe ? msg.pathUrl : msg.url;
+
           // Build the info box with the URL inside
-          const publicLine = `→ ${msg.url}`;
-          const pathLine = msg.pathUrl ? `  ${msg.pathUrl}` : "";
+          const publicLine = `→ ${primary}`;
+          const pathLine = secondary && secondary !== primary
+            ? `  ${secondary}${!wildcardSafe ? " (needs custom wildcard domain)" : ""}`
+            : "";
           const fwdLine = `  forwarding to http://localhost:${localPort}`;
           const ctrlLine = `Press Ctrl+C to disconnect`;
 
