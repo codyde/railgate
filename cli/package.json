@@ -1,23 +1,53 @@
 {
   "name": "railgate",
   "version": "0.1.0",
+  "description": "Self-hostable localhost tunnel — deploy a Railway relay in one command, then expose any port over a public URL.",
   "type": "module",
   "bin": {
-    "railgate": "dist/index.js"
+    "railgate": "dist/railgate.cjs"
+  },
+  "files": [
+    "dist/railgate.cjs",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
   },
   "scripts": {
     "build": "tsc",
-    "bundle": "esbuild src/index.ts --bundle --platform=node --format=cjs --outfile=dist/railgate-bundle.cjs",
+    "bundle": "esbuild src/index.ts --bundle --platform=node --format=cjs --target=node20 --outfile=dist/railgate.cjs --external:@clack/prompts --external:commander --external:ws --external:open && chmod +x dist/railgate.cjs",
+    "prepack": "npm run build && npm run bundle",
     "dev": "tsx src/index.ts"
   },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/codyde/railgate.git"
+  },
+  "homepage": "https://github.com/codyde/railgate#readme",
+  "bugs": {
+    "url": "https://github.com/codyde/railgate/issues"
+  },
+  "keywords": [
+    "tunnel",
+    "ngrok",
+    "localhost",
+    "webhook",
+    "railway",
+    "self-hosted",
+    "websocket",
+    "proxy"
+  ],
+  "author": "Cody De Arkland",
+  "license": "MIT",
   "dependencies": {
     "@clack/prompts": "^1.4.0",
-    "@railgate/shared": "*",
     "commander": "^12.1.0",
     "open": "^11.0.0",
     "ws": "^8.18.0"
   },
   "devDependencies": {
+    "@railgate/shared": "*",
     "@types/ws": "^8.5.13",
     "esbuild": "^0.27.4",
     "tsx": "^4.19.0",

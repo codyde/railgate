@@ -1,4 +1,5 @@
 import { gql, type GqlOptions } from "./api.js";
+import { RAILGATE_TEMPLATE_CONFIG } from "./template-config.js";
 
 /**
  * The railgate template — must match the template registered in Railway.
@@ -9,8 +10,11 @@ import { gql, type GqlOptions } from "./api.js";
 export const RAILGATE_TEMPLATE_ID = "9b93c7e9-c52a-4b6f-a81d-dbcf873687c9";
 export const RAILGATE_TEMPLATE_CODE = "mBm3DX";
 
-interface TemplateDetailResult {
-  template: { id: string; serializedConfig: TemplateConfig } | null;
+interface MeResult {
+  me: {
+    id: string;
+    workspaces: Array<{ id: string; name: string }>;
+  };
 }
 
 interface ProjectCreateResult {
@@ -81,20 +85,24 @@ export async function deployRailgateRelay(
 ): Promise<DeployedRelay> {
   const gqlOpts: GqlOptions = { onPromptUrl: progress.onPromptUrl };
 
-  progress.onPhase?.("Fetching template config");
-  const { template } = await gql<TemplateDetailResult>(
-    `query ($id: String!) { template(id: $id) { id serializedConfig } }`,
-    { id: RAILGATE_TEMPLATE_ID },
-    gqlOpts
-  );
-  if (!template) {
-    throw new Error(
-      "Railgate template not accessible from this Railway account — make sure the template is published or that you have access."
-    );
-  }
-  const config = injectVariables(template.serializedConfig, {
+  // The serializedConfig is embedded (see template-config.ts for why) so we
+  // skip the runtime template fetch entirely.
+  const config = injectVariables(RAILGATE_TEMPLATE_CONFIG as TemplateConfig, {
     RAILGATE_TOKEN: relayToken,
   });
+
+  progress.onPhase?.("Looking up your Railway workspace");
+  const { me } = await gql<MeResult>(
+    `query { me { id workspaces { id name } } }`,
+    {},
+    gqlOpts
+  );
+  const workspaceId = me.workspaces[0]?.id;
+  if (!workspaceId) {
+    throw new Error(
+      "Your Railway account doesn't appear to belong to any workspace. Create one at https://railway.com first."
+    );
+  }
 
   progress.onPhase?.("Creating Railway project");
   const { projectCreate } = await gql<ProjectCreateResult>(
@@ -105,7 +113,7 @@ export async function deployRailgateRelay(
         environments { edges { node { id name } } }
       }
     }`,
-    { input: { name: projectName } },
+    { input: { name: projectName, workspaceId } },
     gqlOpts
   );
   const productionEnv =
