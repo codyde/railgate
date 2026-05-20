@@ -7,14 +7,12 @@ import open from "open";
 import { configDir } from "../config.js";
 
 /**
- * Public OAuth client (PKCE-only, no secret). Override via env var so the same
- * binary can be retargeted at a dev OAuth app without rebuilding.
- *
- * TODO: replace DEFAULT_CLIENT_ID with the real railgate OAuth client_id once
- * the app is registered at Railway. Until then, set RAILGATE_OAUTH_CLIENT_ID
- * at runtime.
+ * Public OAuth client (PKCE-only, no secret). Safe to embed in a published
+ * package — there's no client_secret involved; PKCE replaces it. Override via
+ * env var so the same binary can be retargeted at a dev OAuth app without
+ * rebuilding.
  */
-const DEFAULT_CLIENT_ID = "rlwy_oaci_REPLACE_BEFORE_SHIPPING";
+const DEFAULT_CLIENT_ID = "rlwy_oaci_Fbfd7mYeSDdzwKEjwq3iBZ0A";
 export const RAILWAY_CLIENT_ID =
   process.env.RAILGATE_OAUTH_CLIENT_ID ?? DEFAULT_CLIENT_ID;
 
