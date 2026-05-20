@@ -13,8 +13,7 @@ import open from "open";
 import { WHOAMI_PATH } from "@railgate/shared";
 import { saveConfig, configPath, type RailgateConfig } from "./config.js";
 
-/** Filled in during Phase 4 with the real Railway template URL. */
-const TEMPLATE_URL = "https://railway.app/template/PLACEHOLDER";
+const TEMPLATE_URL = "https://railway.com/deploy/mBm3DX";
 
 interface NormalizedUrl {
   httpUrl: string;
