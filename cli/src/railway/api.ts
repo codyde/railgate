@@ -54,7 +54,8 @@ export async function gql<T>(
   const payload = (await res.json()) as { data?: T; errors?: GqlError[] };
   if (payload.errors && payload.errors.length > 0) {
     const isAuth = payload.errors.some(
-      (e) => /not authorized|unauthorized/i.test(e.message) || e.extensions?.code === "UNAUTHENTICATED"
+      (e) =>
+        /not authorized|unauthorized/i.test(e.message) || e.extensions?.code === "UNAUTHENTICATED"
     );
     if (isAuth) {
       // Some Railway endpoints return 200 with an auth error in the body.

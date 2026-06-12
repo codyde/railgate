@@ -13,12 +13,10 @@ import { openUrl } from "../util/open-url.js";
  * rebuilding.
  */
 const DEFAULT_CLIENT_ID = "rlwy_oaci_Fbfd7mYeSDdzwKEjwq3iBZ0A";
-export const RAILWAY_CLIENT_ID =
-  process.env.RAILGATE_OAUTH_CLIENT_ID ?? DEFAULT_CLIENT_ID;
+export const RAILWAY_CLIENT_ID = process.env.RAILGATE_OAUTH_CLIENT_ID ?? DEFAULT_CLIENT_ID;
 
 const OAUTH_BASE = "https://backboard.railway.com/oauth";
-const SCOPES =
-  "openid email profile offline_access project:admin workspace:admin";
+const SCOPES = "openid email profile offline_access project:admin workspace:admin";
 
 const CALLBACK_HTML = `<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>Railgate</title>
@@ -38,9 +36,7 @@ interface PkceChallenge {
 
 function generatePkce(): PkceChallenge {
   const codeVerifier = randomBytes(64).toString("base64url").slice(0, 128);
-  const codeChallenge = createHash("sha256")
-    .update(codeVerifier)
-    .digest("base64url");
+  const codeChallenge = createHash("sha256").update(codeVerifier).digest("base64url");
   return { codeVerifier, codeChallenge };
 }
 
@@ -48,11 +44,7 @@ function generateState(): string {
   return randomBytes(32).toString("base64url");
 }
 
-function buildAuthorizationUrl(
-  redirectUri: string,
-  pkce: PkceChallenge,
-  state: string
-): string {
+function buildAuthorizationUrl(redirectUri: string, pkce: PkceChallenge, state: string): string {
   const url = new URL(`${OAUTH_BASE}/auth`);
   url.searchParams.set("response_type", "code");
   url.searchParams.set("client_id", RAILWAY_CLIENT_ID);
@@ -139,9 +131,7 @@ async function exchangeCodeForToken(
   return (await res.json()) as TokenResponse;
 }
 
-export async function refreshAccessToken(
-  refreshToken: string
-): Promise<TokenResponse> {
+export async function refreshAccessToken(refreshToken: string): Promise<TokenResponse> {
   const params = new URLSearchParams({
     grant_type: "refresh_token",
     refresh_token: refreshToken,
@@ -185,9 +175,7 @@ async function bindCallbackListener(
       if (resolved) return;
       resolved = true;
       server.close();
-      reject(
-        new Error("OAuth flow timed out — no callback received after 5 minutes")
-      );
+      reject(new Error("OAuth flow timed out — no callback received after 5 minutes"));
     }, timeoutMs);
 
     const settle = (err: Error | null, code?: string) => {
@@ -211,9 +199,7 @@ async function bindCallbackListener(
 
       // Render the close-this-tab page regardless so the browser shows
       // something useful even on error.
-      res
-        .writeHead(200, { "Content-Type": "text/html; charset=utf-8" })
-        .end(CALLBACK_HTML);
+      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(CALLBACK_HTML);
 
       if (errorParam) {
         settle(new Error(`OAuth error from Railway: ${errorParam}`));
@@ -241,9 +227,11 @@ async function bindCallbackListener(
  * it to the user (useful for SSH sessions where `open` may not reach a real
  * browser, or when the browser launch silently fails).
  */
-export async function loginWithBrowser(opts: {
-  onPromptUrl?: (url: string) => void;
-} = {}): Promise<RailwayAuth> {
+export async function loginWithBrowser(
+  opts: {
+    onPromptUrl?: (url: string) => void;
+  } = {}
+): Promise<RailwayAuth> {
   const pkce = generatePkce();
   const state = generateState();
 
@@ -262,11 +250,7 @@ export async function loginWithBrowser(opts: {
   }
 
   const code = await codePromise;
-  const tokenResp = await exchangeCodeForToken(
-    code,
-    redirectUri,
-    pkce.codeVerifier
-  );
+  const tokenResp = await exchangeCodeForToken(code, redirectUri, pkce.codeVerifier);
   const auth = tokenToAuth(tokenResp);
   saveRailwayAuth(auth);
   return auth;
@@ -280,9 +264,11 @@ export async function loginWithBrowser(opts: {
  * - Saved auth expired but refresh token present → refresh; on failure, re-login.
  * - Saved auth expired with no refresh token → re-login.
  */
-export async function getAccessToken(opts: {
-  onPromptUrl?: (url: string) => void;
-} = {}): Promise<string> {
+export async function getAccessToken(
+  opts: {
+    onPromptUrl?: (url: string) => void;
+  } = {}
+): Promise<string> {
   const existing = loadRailwayAuth();
   if (!existing) {
     const auth = await loginWithBrowser(opts);

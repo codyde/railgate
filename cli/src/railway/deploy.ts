@@ -92,11 +92,7 @@ export async function deployRailgateRelay(
   });
 
   progress.onPhase?.("Looking up your Railway workspace");
-  const { me } = await gql<MeResult>(
-    `query { me { id workspaces { id name } } }`,
-    {},
-    gqlOpts
-  );
+  const { me } = await gql<MeResult>(`query { me { id workspaces { id name } } }`, {}, gqlOpts);
   const workspaceId = me.workspaces[0]?.id;
   if (!workspaceId) {
     throw new Error(
@@ -117,8 +113,8 @@ export async function deployRailgateRelay(
     gqlOpts
   );
   const productionEnv =
-    projectCreate.environments.edges.find((e) => e.node.name === "production")
-      ?.node ?? projectCreate.environments.edges[0]?.node;
+    projectCreate.environments.edges.find((e) => e.node.name === "production")?.node ??
+    projectCreate.environments.edges[0]?.node;
   if (!productionEnv) {
     throw new Error("Created project has no environments");
   }
@@ -167,12 +163,7 @@ export async function deployRailgateRelay(
     throw new Error("Deploy reported success but the project has no services");
   }
 
-  const baseDomain = await pollForDomain(
-    projectCreate.id,
-    productionEnv.id,
-    service.id,
-    gqlOpts
-  );
+  const baseDomain = await pollForDomain(projectCreate.id, productionEnv.id, service.id, gqlOpts);
 
   return {
     projectId: projectCreate.id,
@@ -188,10 +179,7 @@ export async function deployRailgateRelay(
  * Poll `workflowStatus` until the workflow reports Complete, Error, or NotFound.
  * Mirrors the cadence Railway's own CLI uses (120 × ~1.5s = ~3min ceiling).
  */
-async function waitForWorkflow(
-  workflowId: string,
-  opts: GqlOptions
-): Promise<void> {
+async function waitForWorkflow(workflowId: string, opts: GqlOptions): Promise<void> {
   const maxAttempts = 120;
   const delayMs = 1500;
   for (let i = 0; i < maxAttempts; i++) {
@@ -250,10 +238,7 @@ async function pollForDomain(
  * Walk the template's services and fill in variable values from the supplied
  * map. Deep-clones to avoid mutating the input config.
  */
-function injectVariables(
-  config: TemplateConfig,
-  vars: Record<string, string>
-): TemplateConfig {
+function injectVariables(config: TemplateConfig, vars: Record<string, string>): TemplateConfig {
   const clone = JSON.parse(JSON.stringify(config)) as TemplateConfig;
   for (const svcId of Object.keys(clone.services ?? {})) {
     const svc = clone.services![svcId];

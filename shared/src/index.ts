@@ -118,9 +118,7 @@ export function parseMessage(data: string): ClientMessage | ServerMessage {
   return JSON.parse(data);
 }
 
-export function serializeMessage(
-  msg: ClientMessage | ServerMessage
-): string {
+export function serializeMessage(msg: ClientMessage | ServerMessage): string {
   return JSON.stringify(msg);
 }
 

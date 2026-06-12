@@ -1,9 +1,33 @@
 {
   "name": "railgate",
   "private": true,
+  "type": "module",
   "workspaces": [
     "shared",
     "relay",
     "cli"
-  ]
+  ],
+  "scripts": {
+    "build": "npm run build --workspace=@railgate/shared && npm run build --workspace=@railgate/relay && npm run build --workspace=railgate",
+    "build:shared": "npm run build --workspace=@railgate/shared",
+    "build:relay": "npm run build --workspace=@railgate/relay",
+    "build:cli": "npm run build --workspace=railgate",
+    "bundle": "npm run bundle --workspace=railgate",
+    "dev:relay": "npm run dev --workspace=@railgate/relay",
+    "dev:cli": "npm run dev --workspace=railgate",
+    "clean": "npm run clean --workspaces --if-present",
+    "typecheck": "npm run build:shared && npm run typecheck --workspaces --if-present",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "prepack": "npm run build"
+  },
+  "devDependencies": {
+    "@typescript-eslint/eslint-plugin": "^8.0.0",
+    "@typescript-eslint/parser": "^8.0.0",
+    "eslint": "^8.57.0",
+    "prettier": "^3.3.0",
+    "typescript": "^5.6.0"
+  }
 }

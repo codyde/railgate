@@ -25,7 +25,11 @@ interface Tunnel {
   pendingRequests: Map<
     string,
     {
-      resolve: (msg: { status: number; headers: Record<string, string | string[]>; body?: string }) => void;
+      resolve: (msg: {
+        status: number;
+        headers: Record<string, string | string[]>;
+        body?: string;
+      }) => void;
       timer: ReturnType<typeof setTimeout>;
     }
   >;
@@ -42,9 +46,7 @@ const PORT = parseInt(process.env.PORT || "3000", 10);
 // The base domain for tunnel URLs. In production this would be your wildcard domain.
 // e.g., "tunnels.yourdomain.com" so tunnels are "abc123.tunnels.yourdomain.com"
 const BASE_DOMAIN =
-  process.env.BASE_DOMAIN ||
-  process.env.RAILWAY_PUBLIC_DOMAIN ||
-  `localhost:${PORT}`;
+  process.env.BASE_DOMAIN || process.env.RAILWAY_PUBLIC_DOMAIN || `localhost:${PORT}`;
 // When running on Railway (or anywhere the public domain is set explicitly),
 // default to https so the wizard saves wss:// for the WebSocket URL.
 const PROTOCOL =
@@ -489,5 +491,7 @@ server.listen(PORT, () => {
   } else {
     console.log(`[railgate] auth: token required`);
   }
-  console.log(`[railgate] tunnel control: ${PROTOCOL === "https" ? "wss" : "ws"}://${BASE_DOMAIN}${CONTROL_PATH}`);
+  console.log(
+    `[railgate] tunnel control: ${PROTOCOL === "https" ? "wss" : "ws"}://${BASE_DOMAIN}${CONTROL_PATH}`
+  );
 });

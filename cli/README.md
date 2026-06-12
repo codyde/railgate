@@ -30,11 +30,11 @@ After that, `npx railgate http <port>` just works.
 
 Effective config resolves as `flags > env vars > saved config`.
 
-| Source | Format |
-|---|---|
-| CLI flags | `--relay <url>`, `--token <value>`, `--subdomain <name>` |
-| Env vars | `RAILGATE_RELAY_URL`, `RAILGATE_TOKEN` |
-| Saved | `~/.config/railgate/config.json` (or `$XDG_CONFIG_HOME/railgate/config.json`) |
+| Source    | Format                                                                        |
+| --------- | ----------------------------------------------------------------------------- |
+| CLI flags | `--relay <url>`, `--token <value>`, `--subdomain <name>`                      |
+| Env vars  | `RAILGATE_RELAY_URL`, `RAILGATE_TOKEN`                                        |
+| Saved     | `~/.config/railgate/config.json` (or `$XDG_CONFIG_HOME/railgate/config.json`) |
 
 ## Alternative setup modes
 
