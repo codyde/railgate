@@ -16,8 +16,10 @@ import {
   type WsDataMessage,
   type WsCloseMessage,
 } from "@railgate/shared";
-import { configPath, resolveConfig } from "./config.js";
+import { clearConfig, configPath, loadConfig, resolveConfig } from "./config.js";
 import { runSetup } from "./setup.js";
+import { runDomainAdd, runDomainStatus, runDomainRemove } from "./domain.js";
+import { clearRailwayAuth } from "./railway/oauth.js";
 
 // ── Spinner ──
 
@@ -72,7 +74,7 @@ let sessionStartTime = Date.now();
 program
   .name("railgate")
   .description("Expose local services via a public URL through a railgate relay")
-  .version("0.1.0");
+  .version("0.2.0");
 
 program
   .command("http")
@@ -115,6 +117,52 @@ program
   .option("--browser", "Use the legacy browser-handoff flow instead of OAuth (paste-back)")
   .action(async (opts: { manual?: boolean; browser?: boolean }) => {
     await runSetup(opts);
+  });
+
+program
+  .command("reset")
+  .description("Clear saved Railway auth and relay configuration")
+  .action(() => {
+    const cfg = loadConfig();
+    clearRailwayAuth();
+    clearConfig();
+    console.log("");
+    console.log("  Cleared Railway auth and relay config.");
+    if (cfg?.railway) {
+      console.log("");
+      console.log("  \x1b[33mNote:\x1b[0m the relay deployed on Railway is still running.");
+      console.log("  Delete the project in the Railway dashboard if you no longer need it:");
+      console.log(`  https://railway.com/project/${cfg.railway.projectId}`);
+    }
+    console.log("");
+    console.log("  Run \x1b[1mnpx railgate setup\x1b[0m to start fresh.");
+    console.log("");
+  });
+
+const domain = program
+  .command("domain")
+  .description("Bind a custom wildcard domain to your relay");
+
+domain
+  .command("add")
+  .description("Register a wildcard domain (e.g. *.tunnels.example.com) and bind it to the relay")
+  .argument("[domain]", "Wildcard domain to bind")
+  .action(async (domainArg?: string) => {
+    await runDomainAdd(domainArg);
+  });
+
+domain
+  .command("status")
+  .description("Check DNS/certificate progress and finish binding the domain")
+  .action(async () => {
+    await runDomainStatus();
+  });
+
+domain
+  .command("remove")
+  .description("Remove the custom domain and fall back to the Railway domain")
+  .action(async () => {
+    await runDomainRemove();
   });
 
 program.parse();
@@ -437,8 +485,15 @@ function handleWsOpen(
   delete localHeaders["sec-websocket-extensions"];
   delete localHeaders["upgrade"];
   delete localHeaders["connection"];
+  // Subprotocols must go through the ws client API, not raw headers —
+  // otherwise the client rejects the server's echoed subprotocol.
+  const rawProtocols = localHeaders["sec-websocket-protocol"];
+  delete localHeaders["sec-websocket-protocol"];
+  const subprotocols = rawProtocols
+    ? String(rawProtocols).split(",").map((p) => p.trim()).filter(Boolean)
+    : [];
 
-  const localWs = new WebSocket(localUrl, { headers: localHeaders });
+  const localWs = new WebSocket(localUrl, subprotocols, { headers: localHeaders });
 
   localWs.on("open", () => {
     console.log(`  ${timestamp()}  \x1b[35mWS\x1b[0m  OPEN ${path}`);

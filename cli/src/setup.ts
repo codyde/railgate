@@ -3,6 +3,7 @@ import {
   outro,
   text,
   password,
+  confirm,
   spinner,
   note,
   cancel,
@@ -12,6 +13,7 @@ import { randomBytes } from "crypto";
 import { WHOAMI_PATH } from "@railgate/shared";
 import { openUrl } from "./util/open-url.js";
 import { saveConfig, configPath, type RailgateConfig } from "./config.js";
+import { addDomainFlow } from "./domain.js";
 import {
   deployRailgateRelay,
   RAILGATE_TEMPLATE_CODE,
@@ -179,10 +181,45 @@ async function runAutoSetup(): Promise<void> {
       baseDomain: whoami.baseDomain,
       protocol: whoami.protocol,
       protocolVersion: whoami.protocolVersion,
+      railway: {
+        projectId: deployed.projectId,
+        environmentId: deployed.environmentId,
+        serviceId: deployed.serviceId,
+        serviceDomain: deployed.baseDomain,
+      },
     };
     saveConfig(cfg);
 
-    outro(`Saved to ${configPath()}\n\nTry it: npx railgate http 3000`);
+    note(
+      `Railway's *.up.railway.app certificate can't cover tunnel subdomains, so\n` +
+        `tunnels currently use path URLs (https://${deployed.baseDomain}/_t/<name>).\n` +
+        `Binding a domain you own (as a wildcard, e.g. *.tunnels.example.com) gives\n` +
+        `every tunnel its own subdomain with a valid certificate.`,
+      "Custom domain"
+    );
+
+    const bindNow = await exitIfCancel(
+      await confirm({
+        message: "Bind a custom domain now? (you can do this later with `railgate domain add`)",
+        initialValue: false,
+      })
+    );
+
+    if (bindNow) {
+      const domainInput = await exitIfCancel(
+        await text({
+          message: "Wildcard domain for your tunnels",
+          placeholder: "*.tunnels.example.com",
+          validate: (v) => (!v ? "Domain is required" : undefined),
+        })
+      );
+      await addDomainFlow(cfg, domainInput);
+      return;
+    }
+
+    outro(
+      `Saved to ${configPath()}\n\nTry it: npx railgate http 3000\nBind a domain later: npx railgate domain add`
+    );
   } catch (err) {
     s.stop("Setup failed");
     const message = (err as Error).message ?? String(err);

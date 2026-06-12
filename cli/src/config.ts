@@ -2,6 +2,26 @@ import fs from "fs";
 import path from "path";
 import { homedir } from "os";
 
+export interface RailwayServiceRef {
+  projectId: string;
+  environmentId: string;
+  serviceId: string;
+  /** Railway-provided service domain (e.g. xyz.up.railway.app). Kept as the
+   * stable control-channel host even after a custom domain is bound. */
+  serviceDomain: string;
+}
+
+export interface CustomDomainState {
+  /** Railway custom domain ID, used to poll status and delete. */
+  id: string;
+  /** The wildcard domain as registered, e.g. "*.tunnels.example.com". */
+  domain: string;
+  /** The domain without the leading "*.", used as the relay BASE_DOMAIN. */
+  baseDomain: string;
+  /** True once BASE_DOMAIN/PROTOCOL were applied to the relay and it redeployed. */
+  finalized: boolean;
+}
+
 export interface RailgateConfig {
   /** WebSocket URL of the relay (ws:// or wss://) */
   relayUrl: string;
@@ -13,6 +33,11 @@ export interface RailgateConfig {
   protocol?: "http" | "https";
   /** Wire protocol version recorded at setup time. */
   protocolVersion?: number;
+  /** Railway IDs of the relay deployed by `railgate setup`. Absent for
+   * manually-configured relays — custom domain commands require these. */
+  railway?: RailwayServiceRef;
+  /** Custom wildcard domain bound (or being bound) to the relay. */
+  customDomain?: CustomDomainState;
 }
 
 export interface ResolveFlags {
@@ -37,6 +62,14 @@ export function loadConfig(): RailgateConfig | null {
     const code = (err as NodeJS.ErrnoException).code;
     if (code === "ENOENT") return null;
     throw err;
+  }
+}
+
+export function clearConfig(): void {
+  try {
+    fs.unlinkSync(configPath());
+  } catch {
+    // already gone
   }
 }
 
