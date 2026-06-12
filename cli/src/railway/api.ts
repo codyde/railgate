@@ -23,6 +23,27 @@ export class GraphQLError extends Error {
   }
 }
 
+export class HttpError extends Error {
+  status: number;
+  constructor(status: number, body: string) {
+    super(`Railway API returned HTTP ${status}${body ? `: ${body}` : ""}`);
+    this.name = "HttpError";
+    this.status = status;
+  }
+  /** Gateway/availability errors that are worth retrying or recovering from. */
+  get transient(): boolean {
+    return [502, 503, 504, 521, 522, 524, 529].includes(this.status);
+  }
+}
+
+/** Cloudflare error pages are full HTML documents — never show those raw. */
+function cleanErrorBody(body: string): string {
+  const trimmed = body.trim();
+  if (!trimmed) return "";
+  if (trimmed.startsWith("<")) return "(HTML error page from gateway)";
+  return trimmed.length > 300 ? trimmed.slice(0, 300) + "…" : trimmed;
+}
+
 export interface GqlOptions {
   /** Surface the auth URL when a fresh login is required. */
   onPromptUrl?: (url: string) => void;
@@ -40,6 +61,29 @@ export async function gql<T>(
   variables: Record<string, unknown> = {},
   opts: GqlOptions = {}
 ): Promise<T> {
+  // Queries are safe to retry on gateway errors; mutations are not (the
+  // server may have executed them despite the failed response), so those
+  // surface an HttpError for the caller to recover deliberately.
+  const isMutation = query.trimStart().startsWith("mutation");
+  const maxAttempts = isMutation ? 1 : 3;
+
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await gqlOnce<T>(query, variables, opts);
+    } catch (err) {
+      const retryable =
+        err instanceof HttpError && err.transient && attempt < maxAttempts;
+      if (!retryable) throw err;
+      await new Promise((r) => setTimeout(r, attempt * 2000));
+    }
+  }
+}
+
+async function gqlOnce<T>(
+  query: string,
+  variables: Record<string, unknown>,
+  opts: GqlOptions
+): Promise<T> {
   let token = await getAccessToken(opts);
   let res = await postGql(token, query, variables);
   if (res.status === 401) {
@@ -49,7 +93,7 @@ export async function gql<T>(
   }
   if (!res.ok) {
     const body = await res.text().catch(() => "");
-    throw new Error(`Railway GraphQL failed (HTTP ${res.status}): ${body}`);
+    throw new HttpError(res.status, cleanErrorBody(body));
   }
   const payload = (await res.json()) as { data?: T; errors?: GqlError[] };
   if (payload.errors && payload.errors.length > 0) {

@@ -1,4 +1,4 @@
-import { gql, type GqlOptions } from "./api.js";
+import { gql, HttpError, type GqlOptions } from "./api.js";
 import { RAILGATE_TEMPLATE_CONFIG } from "./template-config.js";
 
 /**
@@ -123,65 +123,125 @@ export async function deployRailgateRelay(
     throw new Error("Created project has no environments");
   }
 
-  progress.onPhase?.("Deploying relay");
-  const { templateDeployV2 } = await gql<TemplateDeployResult>(
-    `mutation (
-      $projectId: String!
-      $environmentId: String!
-      $templateId: String!
-      $serializedConfig: SerializedTemplateConfig!
-    ) {
-      templateDeployV2(input: {
-        projectId: $projectId
-        environmentId: $environmentId
-        templateId: $templateId
-        serializedConfig: $serializedConfig
-      }) { projectId workflowId }
-    }`,
-    {
+  // From here on a created project exists — if anything fails, tell the user
+  // where it lives so it doesn't linger as an invisible orphan.
+  try {
+    progress.onPhase?.("Deploying relay");
+    const workflowId = await deployTemplate(
+      projectCreate.id,
+      productionEnv.id,
+      config,
+      progress,
+      gqlOpts
+    );
+
+    if (workflowId) {
+      progress.onPhase?.("Waiting for build to finish (up to 2 minutes)");
+      await waitForWorkflow(workflowId, gqlOpts);
+    }
+
+    progress.onPhase?.("Discovering service domain");
+    const service = (await listServices(projectCreate.id, gqlOpts))[0];
+    if (!service) {
+      throw new Error("Deploy reported success but the project has no services");
+    }
+
+    const baseDomain = await pollForDomain(
+      projectCreate.id,
+      productionEnv.id,
+      service.id,
+      gqlOpts
+    );
+
+    return {
       projectId: projectCreate.id,
       environmentId: productionEnv.id,
-      templateId: RAILGATE_TEMPLATE_ID,
-      serializedConfig: config,
-    },
-    gqlOpts
-  );
-
-  if (templateDeployV2.workflowId) {
-    progress.onPhase?.("Waiting for build to finish (up to 2 minutes)");
-    await waitForWorkflow(templateDeployV2.workflowId, gqlOpts);
+      serviceId: service.id,
+      baseDomain,
+      httpUrl: `https://${baseDomain}`,
+      wsUrl: `wss://${baseDomain}`,
+    };
+  } catch (err) {
+    const e = err as Error;
+    e.message +=
+      `\n\nThe Railway project "${projectCreate.name}" was created before this failed.` +
+      `\nDelete it (or re-run setup, which creates a fresh project):` +
+      `\nhttps://railway.com/project/${projectCreate.id}`;
+    throw e;
   }
+}
 
-  progress.onPhase?.("Discovering service domain");
+/**
+ * Run templateDeployV2, recovering from gateway timeouts. The mutation only
+ * enqueues a deploy workflow server-side, so a 504 doesn't mean it failed —
+ * the workflow may be running even though we never got the response. Before
+ * retrying (which would deploy the template a second time into the same
+ * project), poll briefly for services appearing in the project.
+ */
+async function deployTemplate(
+  projectId: string,
+  environmentId: string,
+  config: TemplateConfig,
+  progress: DeployProgress,
+  opts: GqlOptions
+): Promise<string | null> {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      const { templateDeployV2 } = await gql<TemplateDeployResult>(
+        `mutation (
+          $projectId: String!
+          $environmentId: String!
+          $templateId: String!
+          $serializedConfig: SerializedTemplateConfig!
+        ) {
+          templateDeployV2(input: {
+            projectId: $projectId
+            environmentId: $environmentId
+            templateId: $templateId
+            serializedConfig: $serializedConfig
+          }) { projectId workflowId }
+        }`,
+        {
+          projectId,
+          environmentId,
+          templateId: RAILGATE_TEMPLATE_ID,
+          serializedConfig: config,
+        },
+        opts
+      );
+      return templateDeployV2.workflowId;
+    } catch (err) {
+      if (!(err instanceof HttpError) || !err.transient || attempt >= 2) {
+        throw err;
+      }
+      // Did the deploy actually start despite the timeout? Services appearing
+      // in the project means yes — continue without a workflowId (the domain
+      // poll below has its own wait).
+      progress.onPhase?.("Railway timed out — checking if the deploy started anyway");
+      for (let i = 0; i < 10; i++) {
+        await new Promise((r) => setTimeout(r, 3000));
+        const services = await listServices(projectId, opts);
+        if (services.length > 0) return null;
+      }
+      progress.onPhase?.("Deploy never started — retrying");
+    }
+  }
+}
+
+async function listServices(
+  projectId: string,
+  opts: GqlOptions
+): Promise<Array<{ id: string; name: string }>> {
   const { project } = await gql<ProjectServicesResult>(
     `query ($id: String!) {
       project(id: $id) {
         services { edges { node { id name } } }
       }
     }`,
-    { id: projectCreate.id },
-    gqlOpts
+    { id: projectId },
+    opts
   );
-  const service = project.services.edges[0]?.node;
-  if (!service) {
-    throw new Error("Deploy reported success but the project has no services");
-  }
-
-  const baseDomain = await pollForDomain(
-    projectCreate.id,
-    productionEnv.id,
-    service.id,
-    gqlOpts
-  );
-
-  return {
-    projectId: projectCreate.id,
-    environmentId: productionEnv.id,
-    serviceId: service.id,
-    baseDomain,
-    httpUrl: `https://${baseDomain}`,
-    wsUrl: `wss://${baseDomain}`,
-  };
+  return project.services.edges.map((e) => e.node);
 }
 
 /**

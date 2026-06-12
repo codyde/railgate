@@ -74,7 +74,7 @@ let sessionStartTime = Date.now();
 program
   .name("railgate")
   .description("Expose local services via a public URL through a railgate relay")
-  .version("0.2.0");
+  .version("0.3.1");
 
 program
   .command("http")
