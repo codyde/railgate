@@ -81,32 +81,27 @@ program
   .option("-r, --relay <url>", "Relay server URL (overrides saved config)")
   .option("-t, --token <value>", "Relay auth token (overrides saved config)")
   .option("-s, --subdomain <name>", "Request a specific subdomain")
-  .action(
-    async (
-      port: string,
-      opts: { relay?: string; token?: string; subdomain?: string }
-    ) => {
-      const localPort = parseInt(port, 10);
-      if (isNaN(localPort)) {
-        console.error("Error: port must be a number");
-        process.exit(1);
-      }
-
-      const cfg = resolveConfig({ relay: opts.relay, token: opts.token });
-      if (!cfg) {
-        console.error("");
-        console.error("  No relay configured.");
-        console.error(`  Run \x1b[1mnpx railgate setup\x1b[0m to deploy a relay,`);
-        console.error(`  or pass \x1b[1m--relay <url>\x1b[0m to use one directly.`);
-        console.error("");
-        console.error(`  Looked for config at: ${configPath()}`);
-        console.error("");
-        process.exit(1);
-      }
-
-      await startTunnel(cfg.relayUrl, cfg.token, localPort, opts.subdomain);
+  .action(async (port: string, opts: { relay?: string; token?: string; subdomain?: string }) => {
+    const localPort = parseInt(port, 10);
+    if (isNaN(localPort)) {
+      console.error("Error: port must be a number");
+      process.exit(1);
     }
-  );
+
+    const cfg = resolveConfig({ relay: opts.relay, token: opts.token });
+    if (!cfg) {
+      console.error("");
+      console.error("  No relay configured.");
+      console.error(`  Run \x1b[1mnpx railgate setup\x1b[0m to deploy a relay,`);
+      console.error(`  or pass \x1b[1m--relay <url>\x1b[0m to use one directly.`);
+      console.error("");
+      console.error(`  Looked for config at: ${configPath()}`);
+      console.error("");
+      process.exit(1);
+    }
+
+    await startTunnel(cfg.relayUrl, cfg.token, localPort, opts.subdomain);
+  });
 
 program
   .command("setup")
@@ -213,9 +208,10 @@ async function startTunnel(
 
           // Build the info box with the URL inside
           const publicLine = `→ ${primary}`;
-          const pathLine = secondary && secondary !== primary
-            ? `  ${secondary}${!wildcardSafe ? " (needs custom wildcard domain)" : ""}`
-            : "";
+          const pathLine =
+            secondary && secondary !== primary
+              ? `  ${secondary}${!wildcardSafe ? " (needs custom wildcard domain)" : ""}`
+              : "";
           const fwdLine = `  forwarding to http://localhost:${localPort}`;
           const ctrlLine = `Press Ctrl+C to disconnect`;
 
@@ -354,9 +350,7 @@ function handleRequest(
       res.on("end", () => {
         const elapsed = performance.now() - startTime;
         const responseBody =
-          chunks.length > 0
-            ? Buffer.concat(chunks).toString("base64")
-            : undefined;
+          chunks.length > 0 ? Buffer.concat(chunks).toString("base64") : undefined;
 
         const responseHeaders: Record<string, string | string[]> = {};
         for (const [key, value] of Object.entries(res.headers)) {
@@ -372,7 +366,9 @@ function handleRequest(
         }
 
         const status = res.statusCode || 200;
-        console.log(`  ${timestamp()}  ${statusTag(status)} ${method} ${path}  \x1b[2m${formatDuration(elapsed)}\x1b[0m`);
+        console.log(
+          `  ${timestamp()}  ${statusTag(status)} ${method} ${path}  \x1b[2m${formatDuration(elapsed)}\x1b[0m`
+        );
 
         const responseMsg: ResponseMessage = {
           type: "response",
@@ -394,12 +390,16 @@ function handleRequest(
       if (!localServiceDown) {
         localServiceDown = true;
         console.log("");
-        console.log(`  \x1b[33m⚠  localhost:${localPort} is not responding — is your server running?\x1b[0m`);
+        console.log(
+          `  \x1b[33m⚠  localhost:${localPort} is not responding — is your server running?\x1b[0m`
+        );
         console.log("");
       }
       // Suppress repeated ECONNREFUSED log lines
     } else {
-      console.error(`  ${timestamp()}  \x1b[31mERR\x1b[0m ${method} ${path} → ${err.message}  \x1b[2m${formatDuration(elapsed)}\x1b[0m`);
+      console.error(
+        `  ${timestamp()}  \x1b[31mERR\x1b[0m ${method} ${path} → ${err.message}  \x1b[2m${formatDuration(elapsed)}\x1b[0m`
+      );
     }
 
     const responseMsg: ResponseMessage = {
@@ -407,7 +407,9 @@ function handleRequest(
       id: requestId,
       status: 502,
       headers: { "content-type": "text/plain" },
-      body: Buffer.from(`Failed to reach localhost:${localPort}: ${err.message}`).toString("base64"),
+      body: Buffer.from(`Failed to reach localhost:${localPort}: ${err.message}`).toString(
+        "base64"
+      ),
     };
     ws.send(serializeMessage(responseMsg));
   });

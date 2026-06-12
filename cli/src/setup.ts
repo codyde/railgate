@@ -1,21 +1,9 @@
-import {
-  intro,
-  outro,
-  text,
-  password,
-  spinner,
-  note,
-  cancel,
-  isCancel,
-} from "@clack/prompts";
+import { intro, outro, text, password, spinner, note, cancel, isCancel } from "@clack/prompts";
 import { randomBytes } from "crypto";
 import { WHOAMI_PATH } from "@railgate/shared";
 import { openUrl } from "./util/open-url.js";
 import { saveConfig, configPath, type RailgateConfig } from "./config.js";
-import {
-  deployRailgateRelay,
-  RAILGATE_TEMPLATE_CODE,
-} from "./railway/deploy.js";
+import { deployRailgateRelay, RAILGATE_TEMPLATE_CODE } from "./railway/deploy.js";
 
 const TEMPLATE_URL = `https://railway.com/deploy/${RAILGATE_TEMPLATE_CODE}`;
 
@@ -44,10 +32,7 @@ export function normalizeRelayUrl(input: string): NormalizedUrl {
   if (slashIdx > -1) rest = rest.slice(0, slashIdx);
   const hostname = rest.split(":")[0];
   const isLocal = hostname === "localhost" || hostname === "127.0.0.1";
-  const secure =
-    scheme === "https" ||
-    scheme === "wss" ||
-    (scheme === "" && !isLocal);
+  const secure = scheme === "https" || scheme === "wss" || (scheme === "" && !isLocal);
   return {
     httpUrl: `${secure ? "https" : "http"}://${rest}`,
     wsUrl: `${secure ? "wss" : "ws"}://${rest}`,
@@ -109,10 +94,7 @@ async function exitIfCancel<T>(value: T | symbol): Promise<T> {
   return value as T;
 }
 
-export async function runSetup(opts: {
-  manual?: boolean;
-  browser?: boolean;
-}): Promise<void> {
+export async function runSetup(opts: { manual?: boolean; browser?: boolean }): Promise<void> {
   if (opts.manual) {
     await runManualSetup();
   } else if (opts.browser) {
@@ -216,7 +198,10 @@ async function runBrowserSetup(): Promise<void> {
   try {
     await openUrl(templateUrl);
   } catch {
-    note(`Couldn't open your browser automatically. Open this URL manually:\n${templateUrl}`, "Browser");
+    note(
+      `Couldn't open your browser automatically. Open this URL manually:\n${templateUrl}`,
+      "Browser"
+    );
   }
 
   const urlInput = await exitIfCancel(
@@ -250,9 +235,7 @@ async function runBrowserSetup(): Promise<void> {
   };
   saveConfig(cfg);
 
-  outro(
-    `Saved to ${configPath()}\n\nTry it: npx railgate http 3000`
-  );
+  outro(`Saved to ${configPath()}\n\nTry it: npx railgate http 3000`);
 }
 
 async function runManualSetup(): Promise<void> {

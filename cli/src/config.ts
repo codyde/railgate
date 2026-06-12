@@ -53,8 +53,7 @@ export function saveConfig(cfg: RailgateConfig): void {
  */
 export function resolveConfig(flags: ResolveFlags = {}): RailgateConfig | null {
   const file = loadConfig();
-  const relayUrl =
-    flags.relay ?? process.env.RAILGATE_RELAY_URL ?? file?.relayUrl;
+  const relayUrl = flags.relay ?? process.env.RAILGATE_RELAY_URL ?? file?.relayUrl;
   const token = flags.token ?? process.env.RAILGATE_TOKEN ?? file?.token;
   if (!relayUrl) return null;
   return {
