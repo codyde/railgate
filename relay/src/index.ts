@@ -154,7 +154,7 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
     } else {
       res.end();
     }
-  } catch (err) {
+  } catch {
     res.writeHead(504, { "Content-Type": "text/plain" });
     res.end("Tunnel request timed out\n");
   }

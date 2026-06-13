@@ -34,7 +34,7 @@ interface NormalizedUrl {
  * the input is clearly a localhost address.
  */
 export function normalizeRelayUrl(input: string): NormalizedUrl {
-  let raw = input.trim().replace(/\/+$/, "");
+  const raw = input.trim().replace(/\/+$/, "");
   let scheme = "";
   let rest = raw;
   const m = raw.match(/^(wss?|https?):\/\/(.+)$/);

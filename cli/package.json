@@ -16,7 +16,7 @@
   },
   "scripts": {
     "build": "tsc",
-    "bundle": "esbuild src/index.ts --bundle --platform=node --format=cjs --target=node20 --outfile=dist/railgate.cjs --external:@clack/prompts --external:commander --external:ws && chmod +x dist/railgate.cjs",
+    "bundle": "node build.mjs",
     "prepack": "npm run build && npm run bundle",
     "dev": "tsx src/index.ts"
   },

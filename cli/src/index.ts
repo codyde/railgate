@@ -5,7 +5,6 @@ import { WebSocket } from "ws";
 import http from "http";
 import {
   CONTROL_PATH,
-  HEARTBEAT_INTERVAL_MS,
   PROTOCOL_VERSION,
   parseMessage,
   serializeMessage,
@@ -20,6 +19,12 @@ import { clearConfig, configPath, loadConfig, resolveConfig } from "./config.js"
 import { runSetup } from "./setup.js";
 import { runDomainAdd, runDomainStatus, runDomainRemove } from "./domain.js";
 import { clearRailwayAuth } from "./railway/oauth.js";
+
+// Injected at bundle time by build.mjs (esbuild `define`). Undefined under
+// `tsx` dev runs, where `typeof` keeps the reference from throwing.
+declare const __RAILGATE_VERSION__: string;
+const VERSION =
+  typeof __RAILGATE_VERSION__ !== "undefined" ? __RAILGATE_VERSION__ : "0.0.0-dev";
 
 // ── Spinner ──
 
@@ -74,7 +79,7 @@ let sessionStartTime = Date.now();
 program
   .name("railgate")
   .description("Expose local services via a public URL through a railgate relay")
-  .version("0.3.1");
+  .version(VERSION);
 
 program
   .command("http")
