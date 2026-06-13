@@ -6,13 +6,19 @@ import http from "http";
 import {
   CONTROL_PATH,
   PROTOCOL_VERSION,
+  FRAME_REQUEST_BODY,
+  FRAME_RESPONSE_BODY,
+  FRAME_WS_TEXT,
+  FRAME_WS_BINARY,
+  WS_READY_OPEN,
   parseMessage,
   serializeMessage,
+  encodeBinaryFrame,
+  decodeBinaryFrame,
+  streamBodyFrames,
   type ServerMessage,
-  type ResponseMessage,
   type WsOpenedMessage,
   type WsFailedMessage,
-  type WsDataMessage,
   type WsCloseMessage,
 } from "@railgate/shared";
 import { clearConfig, configPath, loadConfig, resolveConfig } from "./config.js";
@@ -187,6 +193,8 @@ async function startTunnel(
 
   /** Active local WebSocket connections keyed by connection ID */
   const localWsConnections = new Map<string, WebSocket>();
+  /** In-flight outbound HTTP requests to the local service, keyed by request ID */
+  const outboundRequests = new Map<string, OutboundRequest>();
 
   // ── Graceful shutdown ──
   process.on("SIGINT", () => {
@@ -231,13 +239,26 @@ async function startTunnel(
         serializeMessage({
           type: "register",
           subdomain,
-          localPort,
           protocolVersion: PROTOCOL_VERSION,
         })
       );
     });
 
-    ws.on("message", (data) => {
+    ws.on("message", (data, isBinary) => {
+      if (isBinary) {
+        const { opcode, id, payload } = decodeBinaryFrame(data as Buffer);
+        if (opcode === FRAME_REQUEST_BODY) {
+          const ob = outboundRequests.get(id);
+          if (ob && !ob.req.destroyed) ob.req.write(payload);
+        } else if (opcode === FRAME_WS_TEXT || opcode === FRAME_WS_BINARY) {
+          const localWs = localWsConnections.get(id);
+          if (localWs && localWs.readyState === WS_READY_OPEN) {
+            localWs.send(payload, { binary: opcode === FRAME_WS_BINARY });
+          }
+        }
+        return;
+      }
+
       let msg: ServerMessage;
       try {
         msg = parseMessage(data.toString()) as ServerMessage;
@@ -300,9 +321,32 @@ async function startTunnel(
           break;
         }
 
-        case "request":
-          handleRequest(ws, msg.id, msg.method, msg.path, msg.headers, msg.body, localPort);
+        case "request-head":
+          handleRequestHead(
+            ws,
+            msg.id,
+            msg.method,
+            msg.path,
+            msg.headers,
+            localPort,
+            outboundRequests
+          );
           break;
+
+        case "request-end": {
+          const ob = outboundRequests.get(msg.id);
+          if (ob && !ob.req.destroyed) ob.req.end();
+          break;
+        }
+
+        case "request-abort": {
+          const ob = outboundRequests.get(msg.id);
+          if (ob) {
+            ob.req.destroy();
+            outboundRequests.delete(msg.id);
+          }
+          break;
+        }
 
         case "ping":
           ws.send(serializeMessage({ type: "pong" }));
@@ -311,15 +355,6 @@ async function startTunnel(
         case "ws-open":
           handleWsOpen(ws, msg.id, msg.path, msg.headers, localPort, localWsConnections);
           break;
-
-        case "ws-data": {
-          const localWs = localWsConnections.get(msg.id);
-          if (localWs && localWs.readyState === WebSocket.OPEN) {
-            const buf = Buffer.from(msg.data, "base64");
-            localWs.send(buf, { binary: msg.binary });
-          }
-          break;
-        }
 
         case "ws-close": {
           const localWs = localWsConnections.get(msg.id);
@@ -360,89 +395,97 @@ async function startTunnel(
 
 // ── Forward request to local service ──
 
+interface OutboundRequest {
+  req: http.ClientRequest;
+  start: number;
+}
+
 /** Track whether we've already warned about ECONNREFUSED to avoid log spam */
 let localServiceDown = false;
 
-function handleRequest(
+function statusTag(status: number): string {
+  if (status >= 500) return `\x1b[31m${status}\x1b[0m`;
+  if (status >= 400) return `\x1b[33m${status}\x1b[0m`;
+  if (status >= 300) return `\x1b[36m${status}\x1b[0m`;
+  return `\x1b[32m${status}\x1b[0m`;
+}
+
+function formatDuration(ms: number): string {
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  return `${(ms / 1000).toFixed(1)}s`;
+}
+
+/**
+ * Open a streaming request to the local service. The request body arrives as
+ * subsequent FRAME_REQUEST_BODY frames (written via the message handler) and
+ * is finished by `request-end`; the response is streamed back as
+ * `response-head` + FRAME_RESPONSE_BODY frames + `response-end`.
+ */
+function handleRequestHead(
   ws: WebSocket,
   requestId: string,
   method: string,
   path: string,
   headers: Record<string, string | string[]>,
-  body: string | undefined,
-  localPort: number
+  localPort: number,
+  outbound: Map<string, OutboundRequest>
 ): void {
   sessionRequestCount++;
-  const startTime = performance.now();
+  const start = performance.now();
 
   const localHeaders = { ...headers };
-  // Rewrite host to localhost
   localHeaders["host"] = `localhost:${localPort}`;
-
-  const requestBody = body ? Buffer.from(body, "base64") : undefined;
-
-  const statusTag = (status: number) => {
-    if (status >= 500) return `\x1b[31m${status}\x1b[0m`;
-    if (status >= 400) return `\x1b[33m${status}\x1b[0m`;
-    if (status >= 300) return `\x1b[36m${status}\x1b[0m`;
-    return `\x1b[32m${status}\x1b[0m`;
-  };
-
-  const formatDuration = (ms: number) => {
-    if (ms < 1000) return `${Math.round(ms)}ms`;
-    return `${(ms / 1000).toFixed(1)}s`;
-  };
+  // We re-frame the body ourselves, so drop the inbound framing header.
+  delete localHeaders["transfer-encoding"];
 
   const req = http.request(
-    {
-      hostname: "localhost",
-      port: localPort,
-      path,
-      method,
-      headers: localHeaders,
-    },
+    { hostname: "localhost", port: localPort, path, method, headers: localHeaders },
     (res) => {
-      const chunks: Buffer[] = [];
-      res.on("data", (chunk: Buffer) => chunks.push(chunk));
-      res.on("end", () => {
-        const elapsed = performance.now() - startTime;
-        const responseBody =
-          chunks.length > 0
-            ? Buffer.concat(chunks).toString("base64")
-            : undefined;
+      if (localServiceDown) {
+        localServiceDown = false;
+        console.log(`  \x1b[32m✓\x1b[0m localhost:${localPort} is responding again`);
+      }
 
-        const responseHeaders: Record<string, string | string[]> = {};
-        for (const [key, value] of Object.entries(res.headers)) {
-          if (value !== undefined) {
-            responseHeaders[key] = value;
-          }
+      const status = res.statusCode || 200;
+      const responseHeaders: Record<string, string | string[]> = {};
+      for (const [key, value] of Object.entries(res.headers)) {
+        if (value !== undefined) responseHeaders[key] = value;
+      }
+
+      console.log(
+        `  ${timestamp()}  ${statusTag(status)} ${method} ${path}  \x1b[2m${formatDuration(performance.now() - start)}\x1b[0m`
+      );
+
+      if (ws.readyState === WS_READY_OPEN) {
+        ws.send(
+          serializeMessage({
+            type: "response-head",
+            id: requestId,
+            status,
+            headers: responseHeaders,
+          })
+        );
+      }
+
+      streamBodyFrames(res, ws, FRAME_RESPONSE_BODY, requestId, () => {
+        outbound.delete(requestId);
+        if (ws.readyState === WS_READY_OPEN) {
+          ws.send(serializeMessage({ type: "response-end", id: requestId }));
         }
+      });
 
-        // Service is back up — clear the warning state
-        if (localServiceDown) {
-          localServiceDown = false;
-          console.log(`  \x1b[32m✓\x1b[0m localhost:${localPort} is responding again`);
+      res.on("error", () => {
+        outbound.delete(requestId);
+        if (ws.readyState === WS_READY_OPEN) {
+          ws.send(serializeMessage({ type: "response-end", id: requestId }));
         }
-
-        const status = res.statusCode || 200;
-        console.log(`  ${timestamp()}  ${statusTag(status)} ${method} ${path}  \x1b[2m${formatDuration(elapsed)}\x1b[0m`);
-
-        const responseMsg: ResponseMessage = {
-          type: "response",
-          id: requestId,
-          status,
-          headers: responseHeaders,
-          body: responseBody,
-        };
-        ws.send(serializeMessage(responseMsg));
       });
     }
   );
 
   req.on("error", (err) => {
-    const elapsed = performance.now() - startTime;
+    outbound.delete(requestId);
     const isConnRefused = (err as NodeJS.ErrnoException).code === "ECONNREFUSED";
-
     if (isConnRefused) {
       if (!localServiceDown) {
         localServiceDown = true;
@@ -450,25 +493,25 @@ function handleRequest(
         console.log(`  \x1b[33m⚠  localhost:${localPort} is not responding — is your server running?\x1b[0m`);
         console.log("");
       }
-      // Suppress repeated ECONNREFUSED log lines
     } else {
-      console.error(`  ${timestamp()}  \x1b[31mERR\x1b[0m ${method} ${path} → ${err.message}  \x1b[2m${formatDuration(elapsed)}\x1b[0m`);
+      console.error(
+        `  ${timestamp()}  \x1b[31mERR\x1b[0m ${method} ${path} → ${err.message}  \x1b[2m${formatDuration(performance.now() - start)}\x1b[0m`
+      );
     }
 
-    const responseMsg: ResponseMessage = {
-      type: "response",
-      id: requestId,
-      status: 502,
-      headers: { "content-type": "text/plain" },
-      body: Buffer.from(`Failed to reach localhost:${localPort}: ${err.message}`).toString("base64"),
-    };
-    ws.send(serializeMessage(responseMsg));
+    if (ws.readyState === WS_READY_OPEN) {
+      ws.send(
+        serializeMessage({
+          type: "response-error",
+          id: requestId,
+          status: 502,
+          message: `Failed to reach localhost:${localPort}: ${err.message}`,
+        })
+      );
+    }
   });
 
-  if (requestBody) {
-    req.write(requestBody);
-  }
-  req.end();
+  outbound.set(requestId, { req, start });
 }
 
 // ── Forward WebSocket connection to local service ──
@@ -508,13 +551,15 @@ function handleWsOpen(
   });
 
   localWs.on("message", (data, isBinary) => {
-    const wsData: WsDataMessage = {
-      type: "ws-data",
-      id: connId,
-      data: Buffer.from(data as Buffer).toString("base64"),
-      binary: isBinary,
-    };
-    controlWs.send(serializeMessage(wsData));
+    if (controlWs.readyState === WS_READY_OPEN) {
+      controlWs.send(
+        encodeBinaryFrame(
+          isBinary ? FRAME_WS_BINARY : FRAME_WS_TEXT,
+          connId,
+          Buffer.from(data as Buffer)
+        )
+      );
+    }
   });
 
   localWs.on("close", (code, reason) => {

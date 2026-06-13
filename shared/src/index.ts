@@ -1,16 +1,29 @@
 import { randomBytes } from "crypto";
+import type { Readable } from "node:stream";
 
-// ── WebSocket Protocol Messages ──
+// ── Protocol overview ──
+//
+// railgate v2 streams. Control metadata travels as JSON *text* frames; request
+// and response bodies (and proxied WebSocket payloads) travel as *binary*
+// frames so we avoid base64 overhead and never buffer a whole body in memory.
+//
+// A single HTTP exchange looks like:
+//   relay → client:  request-head, [REQUEST_BODY frames...], request-end
+//   client → relay:  response-head, [RESPONSE_BODY frames...], response-end
+// Either side may emit request-abort / response-error to tear the exchange down.
 
-/** Client sends this to register a new tunnel */
+type HeaderMap = Record<string, string | string[]>;
+
+// ── Control messages (JSON text frames) ──
+
+/** Client → relay: register a tunnel. */
 export interface RegisterMessage {
   type: "register";
   subdomain?: string;
-  localPort: number;
   protocolVersion: number;
 }
 
-/** Server confirms tunnel registration */
+/** Relay → client: tunnel registered. */
 export interface RegisteredMessage {
   type: "registered";
   url: string;
@@ -18,26 +31,50 @@ export interface RegisteredMessage {
   subdomain: string;
 }
 
-/** Server forwards an HTTP request to the client */
-export interface RequestMessage {
-  type: "request";
+/** Relay → client: start of an inbound HTTP request. */
+export interface RequestHeadMessage {
+  type: "request-head";
   id: string;
   method: string;
   path: string;
-  headers: Record<string, string | string[]>;
-  body?: string;
+  headers: HeaderMap;
 }
 
-/** Client sends back the HTTP response */
-export interface ResponseMessage {
-  type: "response";
+/** Relay → client: the inbound request body is complete. */
+export interface RequestEndMessage {
+  type: "request-end";
+  id: string;
+}
+
+/** Relay → client: abandon an in-flight request (timeout, client gone, too large). */
+export interface RequestAbortMessage {
+  type: "request-abort";
+  id: string;
+  message?: string;
+}
+
+/** Client → relay: start of the response (status + headers). */
+export interface ResponseHeadMessage {
+  type: "response-head";
   id: string;
   status: number;
-  headers: Record<string, string | string[]>;
-  body?: string;
+  headers: HeaderMap;
 }
 
-/** Heartbeat ping/pong */
+/** Client → relay: the response body is complete. */
+export interface ResponseEndMessage {
+  type: "response-end";
+  id: string;
+}
+
+/** Client → relay: the local service failed before/while responding. */
+export interface ResponseErrorMessage {
+  type: "response-error";
+  id: string;
+  status?: number;
+  message: string;
+}
+
 export interface PingMessage {
   type: "ping";
 }
@@ -46,44 +83,31 @@ export interface PongMessage {
   type: "pong";
 }
 
-/** Error from the server */
 export interface ErrorMessage {
   type: "error";
   message: string;
 }
 
-// ── WebSocket Proxy Messages ──
+// ── WebSocket proxy control messages ──
 
-/** Server → Client: a new end-user WebSocket wants to connect through the tunnel */
 export interface WsOpenMessage {
   type: "ws-open";
   id: string;
   path: string;
-  headers: Record<string, string | string[]>;
+  headers: HeaderMap;
 }
 
-/** Client → Server: local WebSocket connection established successfully */
 export interface WsOpenedMessage {
   type: "ws-opened";
   id: string;
 }
 
-/** Client → Server: local WebSocket connection failed */
 export interface WsFailedMessage {
   type: "ws-failed";
   id: string;
   message: string;
 }
 
-/** Bidirectional: forward a WebSocket data frame */
-export interface WsDataMessage {
-  type: "ws-data";
-  id: string;
-  data: string; // base64 encoded
-  binary: boolean;
-}
-
-/** Bidirectional: close a proxied WebSocket connection */
 export interface WsCloseMessage {
   type: "ws-close";
   id: string;
@@ -93,20 +117,159 @@ export interface WsCloseMessage {
 
 export type ClientMessage =
   | RegisterMessage
-  | ResponseMessage
+  | ResponseHeadMessage
+  | ResponseEndMessage
+  | ResponseErrorMessage
   | PongMessage
   | WsOpenedMessage
   | WsFailedMessage
-  | WsDataMessage
   | WsCloseMessage;
+
 export type ServerMessage =
   | RegisteredMessage
-  | RequestMessage
+  | RequestHeadMessage
+  | RequestEndMessage
+  | RequestAbortMessage
   | PingMessage
   | ErrorMessage
   | WsOpenMessage
-  | WsDataMessage
   | WsCloseMessage;
+
+export type ControlMessage = ClientMessage | ServerMessage;
+
+// ── Binary body frames ──
+//
+// Layout: [opcode:1][idLen:1][id:idLen][payload...]
+// ids are short ascii strings (request/connection IDs), so a single length
+// byte is plenty.
+
+export const FRAME_REQUEST_BODY = 0x01;
+export const FRAME_RESPONSE_BODY = 0x02;
+export const FRAME_WS_TEXT = 0x03;
+export const FRAME_WS_BINARY = 0x04;
+
+export interface DecodedFrame {
+  opcode: number;
+  id: string;
+  payload: Buffer;
+}
+
+export function encodeBinaryFrame(
+  opcode: number,
+  id: string,
+  payload: Buffer
+): Buffer {
+  const idBuf = Buffer.from(id, "ascii");
+  if (idBuf.length > 255) throw new Error("frame id too long");
+  const header = Buffer.allocUnsafe(2 + idBuf.length);
+  header[0] = opcode;
+  header[1] = idBuf.length;
+  idBuf.copy(header, 2);
+  return Buffer.concat([header, payload]);
+}
+
+export function decodeBinaryFrame(buf: Buffer): DecodedFrame {
+  const opcode = buf[0];
+  const idLen = buf[1];
+  const id = buf.toString("ascii", 2, 2 + idLen);
+  const payload = buf.subarray(2 + idLen);
+  return { opcode, id, payload };
+}
+
+// ── Streaming helpers ──
+
+/** Cap on a single binary frame's payload so large bodies interleave with
+ * other traffic on the shared control socket instead of head-of-line blocking. */
+export const BODY_CHUNK_SIZE = 64 * 1024;
+
+/** Pause sources once the socket's outbound buffer passes this mark. */
+export const DEFAULT_HIGH_WATER_MARK = 8 * 1024 * 1024;
+
+/** ws.readyState value for OPEN (mirrors the `ws` library constant without
+ * importing it into shared). */
+export const WS_READY_OPEN = 1;
+
+export function* chunkBuffer(
+  buf: Buffer,
+  size = BODY_CHUNK_SIZE
+): Generator<Buffer> {
+  if (buf.length <= size) {
+    yield buf;
+    return;
+  }
+  for (let i = 0; i < buf.length; i += size) {
+    yield buf.subarray(i, i + size);
+  }
+}
+
+/** Minimal view of a `ws` WebSocket used for sending binary frames. */
+export interface FrameSink {
+  send(data: Buffer | Uint8Array): void;
+  bufferedAmount: number;
+  readyState: number;
+}
+
+export interface StreamFramesOptions {
+  highWaterMark?: number;
+  /** Abort once the cumulative body size exceeds this many bytes. */
+  maxBytes?: number;
+  /** Called once if maxBytes is exceeded; the source is destroyed afterward. */
+  onLimitExceeded?: () => void;
+}
+
+/**
+ * Pipe a Readable body into chunked binary frames on `sink`, applying simple
+ * backpressure (pause the source while the socket buffer is draining) and an
+ * optional size limit. Calls `onEnd` when the source ends normally.
+ */
+export function streamBodyFrames(
+  source: Readable,
+  sink: FrameSink,
+  opcode: number,
+  id: string,
+  onEnd: () => void,
+  options: StreamFramesOptions = {}
+): void {
+  const hwm = options.highWaterMark ?? DEFAULT_HIGH_WATER_MARK;
+  let total = 0;
+  let aborted = false;
+
+  source.on("data", (chunk: Buffer) => {
+    if (aborted) return;
+
+    if (options.maxBytes !== undefined) {
+      total += chunk.length;
+      if (total > options.maxBytes) {
+        aborted = true;
+        options.onLimitExceeded?.();
+        source.destroy();
+        return;
+      }
+    }
+
+    for (const piece of chunkBuffer(chunk)) {
+      if (sink.readyState !== WS_READY_OPEN) return;
+      sink.send(encodeBinaryFrame(opcode, id, piece));
+    }
+
+    if (sink.bufferedAmount > hwm) {
+      source.pause();
+      const timer = setInterval(() => {
+        if (
+          sink.readyState !== WS_READY_OPEN ||
+          sink.bufferedAmount <= hwm
+        ) {
+          clearInterval(timer);
+          source.resume();
+        }
+      }, 25);
+    }
+  });
+
+  source.once("end", () => {
+    if (!aborted) onEnd();
+  });
+}
 
 // ── Helpers ──
 
@@ -114,13 +277,11 @@ export function generateSubdomain(): string {
   return randomBytes(4).toString("hex");
 }
 
-export function parseMessage(data: string): ClientMessage | ServerMessage {
+export function parseMessage(data: string): ControlMessage {
   return JSON.parse(data);
 }
 
-export function serializeMessage(
-  msg: ClientMessage | ServerMessage
-): string {
+export function serializeMessage(msg: ControlMessage): string {
   return JSON.stringify(msg);
 }
 
@@ -128,6 +289,6 @@ export const CONTROL_PATH = "/_tunnel/connect";
 
 export const HEARTBEAT_INTERVAL_MS = 30_000;
 
-export const PROTOCOL_VERSION = 1;
+export const PROTOCOL_VERSION = 2;
 
 export const WHOAMI_PATH = "/_railgate/whoami";
