@@ -49,27 +49,30 @@ function startMockClient(port: number, subdomain: string): Promise<WebSocket> {
       if (!entry) return;
       inflight.delete(msg.id);
 
-      const body = entry.path.includes("/headers")
-        ? Buffer.from(JSON.stringify(entry.headers))
-        : entry.path.includes("/echo")
-          ? Buffer.concat(entry.chunks)
-          : Buffer.from("hello world");
+      let status = 200;
+      let headers: Record<string, string | string[]> = {
+        "content-type": "application/octet-stream",
+      };
+      let body: Buffer;
 
-      ws.send(
-        serializeMessage({
-          type: "response-head",
-          id: msg.id,
-          status: 200,
-          headers: { "content-type": "application/octet-stream" },
-        })
-      );
-      if (entry.path.includes("/echo") || entry.path.includes("/headers")) {
-        for (const piece of chunkBuffer(body)) {
-          ws.send(encodeBinaryFrame(FRAME_RESPONSE_BODY, msg.id, piece));
-        }
+      if (entry.path.includes("/html")) {
+        headers = { "content-type": "text/html; charset=utf-8" };
+        body = Buffer.from(`<head></head><link href="/style.css">`);
+      } else if (entry.path.includes("/redirect")) {
+        status = 302;
+        headers = { location: "/login" };
+        body = Buffer.alloc(0);
+      } else if (entry.path.includes("/headers")) {
+        body = Buffer.from(JSON.stringify(entry.headers));
+      } else if (entry.path.includes("/echo")) {
+        body = Buffer.concat(entry.chunks);
       } else {
-        ws.send(encodeBinaryFrame(FRAME_RESPONSE_BODY, msg.id, Buffer.from("hello ")));
-        ws.send(encodeBinaryFrame(FRAME_RESPONSE_BODY, msg.id, Buffer.from("world")));
+        body = Buffer.from("hello world");
+      }
+
+      ws.send(serializeMessage({ type: "response-head", id: msg.id, status, headers }));
+      for (const piece of chunkBuffer(body)) {
+        ws.send(encodeBinaryFrame(FRAME_RESPONSE_BODY, msg.id, piece));
       }
       ws.send(serializeMessage({ type: "response-end", id: msg.id }));
     } else if (msg.type === "ping") {
@@ -94,7 +97,7 @@ function httpRequest(
   port: number,
   path: string,
   options: { method?: string; body?: Buffer } = {}
-): Promise<{ status: number; body: Buffer }> {
+): Promise<{ status: number; body: Buffer; headers: http.IncomingHttpHeaders }> {
   return new Promise((resolve, reject) => {
     const req = http.request(
       { hostname: "127.0.0.1", port, path, method: options.method ?? "GET" },
@@ -102,7 +105,11 @@ function httpRequest(
         const chunks: Buffer[] = [];
         res.on("data", (c: Buffer) => chunks.push(c));
         res.on("end", () =>
-          resolve({ status: res.statusCode ?? 0, body: Buffer.concat(chunks) })
+          resolve({
+            status: res.statusCode ?? 0,
+            body: Buffer.concat(chunks),
+            headers: res.headers,
+          })
         );
       }
     );
@@ -154,6 +161,20 @@ describe("relay streaming proxy (protocol v2)", () => {
     expect(headers["x-forwarded-for"]).toBeTruthy();
     expect(headers["x-forwarded-host"]).toBeTruthy();
     expect(headers["forwarded"]).toMatch(/proto=http/);
+  });
+
+  it("rewrites root-absolute URLs in HTML under the path prefix", async () => {
+    const res = await httpRequest(port, "/_t/test/html");
+    expect(res.status).toBe(200);
+    expect(res.body.toString()).toContain('href="/_t/test/style.css"');
+    // Body changed, so the declared length must be dropped.
+    expect(res.headers["content-length"]).toBeUndefined();
+  });
+
+  it("rewrites root-absolute redirect Location headers", async () => {
+    const res = await httpRequest(port, "/_t/test/redirect");
+    expect(res.status).toBe(302);
+    expect(res.headers["location"]).toBe("/_t/test/login");
   });
 
   it("streams a request body through and back (echo)", async () => {

@@ -1,6 +1,8 @@
 import { randomBytes } from "crypto";
 import type { Readable } from "node:stream";
 
+export * from "./rewrite.js";
+
 // ── Protocol overview ──
 //
 // railgate v2 streams. Control metadata travels as JSON *text* frames; request

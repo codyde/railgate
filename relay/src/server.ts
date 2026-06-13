@@ -16,6 +16,11 @@ import {
   encodeBinaryFrame,
   decodeBinaryFrame,
   streamBodyFrames,
+  rewriteLocation,
+  rewriteSetCookieHeader,
+  rewriteHtmlPaths,
+  isHtmlContentType,
+  isCompressed,
   type ClientMessage,
   type ServerMessage,
   type WsOpenMessage,
@@ -52,7 +57,16 @@ interface PendingResponse {
   res: ServerResponse;
   headTimer: ReturnType<typeof setTimeout> | null;
   headReceived: boolean;
+  /** "/_t/<sub>" when this request is served under a path prefix, else null. */
+  pathPrefix: string | null;
+  /** Buffer the HTML body so root-absolute URLs can be rewritten on flush. */
+  collectHtml: boolean;
+  htmlChunks: Buffer[];
+  htmlBytes: number;
 }
+
+/** Stop buffering HTML for rewriting past this size and pass it through. */
+const HTML_REWRITE_CAP = 8 * 1024 * 1024;
 
 interface Tunnel {
   subdomain: string;
@@ -155,11 +169,13 @@ export function createRelay(options: RelayOptions): Relay {
 
     let subdomain = extractSubdomain(host);
     let forwardPath = url;
+    let pathPrefix: string | null = null;
     if (!subdomain) {
       const pathMatch = url.match(/^\/_t\/([a-z0-9-]+)(\/.*)?$/);
       if (pathMatch) {
         subdomain = pathMatch[1];
         forwardPath = pathMatch[2] || "/";
+        pathPrefix = `/_t/${subdomain}`;
       }
     }
 
@@ -210,6 +226,10 @@ export function createRelay(options: RelayOptions): Relay {
       res,
       headTimer,
       headReceived: false,
+      pathPrefix,
+      collectHtml: false,
+      htmlChunks: [],
+      htmlBytes: 0,
     });
 
     // End-user hung up before the response finished — tell the client to stop.
@@ -383,7 +403,18 @@ export function createRelay(options: RelayOptions): Relay {
         if (opcode === FRAME_RESPONSE_BODY) {
           const pending = tunnel.pendingRequests.get(id);
           if (pending && pending.headReceived && !pending.res.writableEnded) {
-            pending.res.write(payload);
+            if (pending.collectHtml) {
+              pending.htmlChunks.push(payload);
+              pending.htmlBytes += payload.length;
+              if (pending.htmlBytes > HTML_REWRITE_CAP) {
+                // Too large to buffer — abandon rewriting and pass through.
+                pending.collectHtml = false;
+                for (const chunk of pending.htmlChunks) pending.res.write(chunk);
+                pending.htmlChunks = [];
+              }
+            } else {
+              pending.res.write(payload);
+            }
           }
         } else if (opcode === FRAME_WS_TEXT || opcode === FRAME_WS_BINARY) {
           const conn = tunnel.wsConnections.get(id);
@@ -456,6 +487,32 @@ export function createRelay(options: RelayOptions): Relay {
           if (!pending.res.headersSent) {
             const headers = { ...msg.headers };
             delete headers["transfer-encoding"];
+
+            if (pending.pathPrefix) {
+              const prefix = pending.pathPrefix;
+              if (headers["location"]) {
+                const loc = Array.isArray(headers["location"])
+                  ? headers["location"][0]
+                  : headers["location"];
+                headers["location"] = rewriteLocation(loc, prefix);
+              }
+              if (headers["set-cookie"]) {
+                headers["set-cookie"] = rewriteSetCookieHeader(
+                  headers["set-cookie"],
+                  prefix
+                );
+              }
+              // Rewriting changes the body length, so buffer HTML and drop the
+              // declared length (we re-emit with chunked encoding).
+              if (
+                isHtmlContentType(headers["content-type"]) &&
+                !isCompressed(headers["content-encoding"])
+              ) {
+                pending.collectHtml = true;
+                delete headers["content-length"];
+              }
+            }
+
             pending.res.writeHead(msg.status, headers);
           }
           break;
@@ -466,7 +523,13 @@ export function createRelay(options: RelayOptions): Relay {
           const pending = tunnel.pendingRequests.get(msg.id);
           if (pending) {
             tunnel.pendingRequests.delete(msg.id);
-            if (!pending.res.writableEnded) pending.res.end();
+            if (!pending.res.writableEnded) {
+              if (pending.collectHtml && pending.pathPrefix) {
+                const html = Buffer.concat(pending.htmlChunks);
+                pending.res.write(rewriteHtmlPaths(html, pending.pathPrefix));
+              }
+              pending.res.end();
+            }
           }
           break;
         }

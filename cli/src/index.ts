@@ -335,6 +335,14 @@ async function startTunnel(
             console.log(`  │ ${line}${" ".repeat(pad)} │`);
           }
           console.log(bot);
+          if (!wildcardSafe) {
+            console.log(
+              `  \x1b[2mpath mode: redirects, cookies & most assets are rewritten automatically.\x1b[0m`
+            );
+            console.log(
+              `  \x1b[2mfor a clean per-tunnel subdomain, run \x1b[0m\x1b[1mrailgate domain add\x1b[0m`
+            );
+          }
           console.log("");
           break;
         }
