@@ -201,6 +201,8 @@ async function startTunnel(
   const BASE_RECONNECT_MS = 1_000;
   const MAX_RECONNECT_MS = 30_000;
 
+  /** Notice codes already shown this session, so advisories print only once. */
+  const seenNotices = new Set<string>();
   /** Active local WebSocket connections keyed by connection ID */
   const localWsConnections = new Map<string, WebSocket>();
   /** In-flight outbound HTTP requests to the local service, keyed by request ID */
@@ -413,6 +415,17 @@ async function startTunnel(
           }
           console.error(`Relay error: ${msg.message}`);
           break;
+
+        case "notice": {
+          const key = msg.code ?? msg.message;
+          if (!seenNotices.has(key)) {
+            seenNotices.add(key);
+            console.log("");
+            console.log(`  \x1b[33m⚠ ${msg.message}\x1b[0m`);
+            console.log("");
+          }
+          break;
+        }
       }
     });
 

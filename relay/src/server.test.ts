@@ -23,7 +23,12 @@ const TOKEN = "test-token";
  * bodies back for paths containing "/echo", otherwise streams a canned body
  * in two frames — exercising both directions of the streaming protocol.
  */
-function startMockClient(port: number, subdomain: string): Promise<WebSocket> {
+interface MockClient {
+  ws: WebSocket;
+  notices: ServerMessage[];
+}
+
+function startMockClient(port: number, subdomain: string): Promise<MockClient> {
   const ws = new WebSocket(`ws://127.0.0.1:${port}${CONTROL_PATH}`, {
     headers: { Authorization: `Bearer ${TOKEN}` },
   });
@@ -32,6 +37,7 @@ function startMockClient(port: number, subdomain: string): Promise<WebSocket> {
     string,
     { path: string; headers: Record<string, string | string[]>; chunks: Buffer[] }
   >();
+  const notices: ServerMessage[] = [];
 
   ws.on("message", (data, isBinary) => {
     if (isBinary) {
@@ -42,7 +48,9 @@ function startMockClient(port: number, subdomain: string): Promise<WebSocket> {
       return;
     }
     const msg = parseMessage(data.toString()) as ServerMessage;
-    if (msg.type === "request-head") {
+    if (msg.type === "notice") {
+      notices.push(msg);
+    } else if (msg.type === "request-head") {
       inflight.set(msg.id, { path: msg.path, headers: msg.headers, chunks: [] });
     } else if (msg.type === "request-end") {
       const entry = inflight.get(msg.id);
@@ -88,7 +96,7 @@ function startMockClient(port: number, subdomain: string): Promise<WebSocket> {
     ws.on("message", (data, isBinary) => {
       if (isBinary) return;
       const msg = parseMessage(data.toString()) as ServerMessage;
-      if (msg.type === "registered") resolve(ws);
+      if (msg.type === "registered") resolve({ ws, notices });
     });
   });
 }
@@ -96,11 +104,17 @@ function startMockClient(port: number, subdomain: string): Promise<WebSocket> {
 function httpRequest(
   port: number,
   path: string,
-  options: { method?: string; body?: Buffer } = {}
+  options: { method?: string; body?: Buffer; headers?: Record<string, string> } = {}
 ): Promise<{ status: number; body: Buffer; headers: http.IncomingHttpHeaders }> {
   return new Promise((resolve, reject) => {
     const req = http.request(
-      { hostname: "127.0.0.1", port, path, method: options.method ?? "GET" },
+      {
+        hostname: "127.0.0.1",
+        port,
+        path,
+        method: options.method ?? "GET",
+        headers: options.headers,
+      },
       (res) => {
         const chunks: Buffer[] = [];
         res.on("data", (c: Buffer) => chunks.push(c));
@@ -122,7 +136,7 @@ function httpRequest(
 describe("relay streaming proxy (protocol v2)", () => {
   let relay: Relay;
   let port: number;
-  let client: WebSocket;
+  let client: MockClient;
 
   beforeAll(async () => {
     relay = createRelay({ token: TOKEN, baseDomain: "127.0.0.1", protocol: "http" });
@@ -134,7 +148,7 @@ describe("relay streaming proxy (protocol v2)", () => {
   });
 
   afterAll(async () => {
-    client.close();
+    client.ws.close();
     await relay.close();
   });
 
@@ -175,6 +189,23 @@ describe("relay streaming proxy (protocol v2)", () => {
     const res = await httpRequest(port, "/_t/test/redirect");
     expect(res.status).toBe(302);
     expect(res.headers["location"]).toBe("/_t/test/login");
+  });
+
+  it("warns the client once when a request escapes the path prefix", async () => {
+    client.notices.length = 0;
+    const referer = { referer: `http://127.0.0.1:${port}/_t/test/page` };
+    await httpRequest(port, "/api/data", { headers: referer });
+    await httpRequest(port, "/api/more", { headers: referer });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(client.notices).toHaveLength(1);
+    expect(client.notices[0]).toMatchObject({ type: "notice", code: "path-escape" });
+  });
+
+  it("does not warn for unmatched requests without a tunnel referer", async () => {
+    client.notices.length = 0;
+    await httpRequest(port, "/favicon.ico");
+    await new Promise((r) => setTimeout(r, 50));
+    expect(client.notices).toHaveLength(0);
   });
 
   it("streams a request body through and back (echo)", async () => {

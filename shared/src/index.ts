@@ -90,6 +90,14 @@ export interface ErrorMessage {
   message: string;
 }
 
+/** Relay → client: a non-fatal advisory (e.g. requests escaping the path
+ * prefix). The tunnel stays up; the client surfaces it to the user. */
+export interface NoticeMessage {
+  type: "notice";
+  message: string;
+  code?: string;
+}
+
 // ── WebSocket proxy control messages ──
 
 export interface WsOpenMessage {
@@ -134,6 +142,7 @@ export type ServerMessage =
   | RequestAbortMessage
   | PingMessage
   | ErrorMessage
+  | NoticeMessage
   | WsOpenMessage
   | WsCloseMessage;
 

@@ -73,6 +73,9 @@ interface Tunnel {
   ws: WebSocket;
   pendingRequests: Map<string, PendingResponse>;
   wsConnections: Map<string, WebSocket>;
+  /** Set once we've warned this client that requests are escaping the path
+   * prefix, so the advisory is sent only once per session. */
+  warnedPathLeak: boolean;
 }
 
 const DEFAULT_MAX_BODY_BYTES = 100 * 1024 * 1024;
@@ -142,6 +145,33 @@ export function createRelay(options: RelayOptions): Relay {
     if (ws.readyState === WS_READY_OPEN) ws.send(serializeMessage(msg));
   }
 
+  /**
+   * A request that resolves to no tunnel but whose Referer points at a
+   * /_t/<sub> tunnel is a root-absolute URL built in JS (fetch/WebSocket) that
+   * escaped the path prefix. Warn that tunnel's client once per session so the
+   * user knows to move to a real subdomain.
+   */
+  function notifyPrefixEscape(req: IncomingMessage): void {
+    const referer = req.headers.referer;
+    if (!referer) return;
+    let refPath: string;
+    try {
+      refPath = new URL(referer).pathname;
+    } catch {
+      return;
+    }
+    const match = refPath.match(/^\/_t\/([a-z0-9-]+)/);
+    if (!match) return;
+    const tunnel = tunnels.get(match[1]);
+    if (!tunnel || tunnel.warnedPathLeak) return;
+    tunnel.warnedPathLeak = true;
+    sendControl(tunnel.ws, {
+      type: "notice",
+      code: "path-escape",
+      message: `A request to "${req.url}" escaped the tunnel path prefix (likely a URL built in JavaScript, e.g. fetch() or WebSocket). Apps that construct absolute URLs in JS need a dedicated subdomain — run \`railgate domain add\`.`,
+    });
+  }
+
   // ── HTTP request handling ──
 
   const server = createServer((req: IncomingMessage, res: ServerResponse) => {
@@ -180,6 +210,7 @@ export function createRelay(options: RelayOptions): Relay {
     }
 
     if (!subdomain) {
+      notifyPrefixEscape(req);
       res.writeHead(200, { "Content-Type": "text/plain" });
       res.end("railgate relay server\n");
       return;
@@ -467,6 +498,7 @@ export function createRelay(options: RelayOptions): Relay {
             ws,
             pendingRequests: new Map(),
             wsConnections: new Map(),
+            warnedPathLeak: false,
           };
           tunnels.set(subdomain, tunnel);
 
