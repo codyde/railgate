@@ -16,6 +16,7 @@ import {
   encodeBinaryFrame,
   decodeBinaryFrame,
   streamBodyFrames,
+  stripHopByHopHeaders,
   type ServerMessage,
   type WsOpenedMessage,
   type WsFailedMessage,
@@ -190,6 +191,15 @@ async function startTunnel(
   const spinner = createSpinner();
   let reconnectAttempts = 0;
   let activeWs: WebSocket | null = null;
+  /** Set when the user is intentionally quitting, to suppress reconnects. */
+  let shuttingDown = false;
+  /** The subdomain to (re)request. Starts as whatever the user asked for and
+   * is updated to the relay-assigned name so reconnects keep the same URL. */
+  let currentSubdomain = subdomain;
+
+  const MAX_RECONNECT_ATTEMPTS = 10;
+  const BASE_RECONNECT_MS = 1_000;
+  const MAX_RECONNECT_MS = 30_000;
 
   /** Active local WebSocket connections keyed by connection ID */
   const localWsConnections = new Map<string, WebSocket>();
@@ -198,6 +208,7 @@ async function startTunnel(
 
   // ── Graceful shutdown ──
   process.on("SIGINT", () => {
+    shuttingDown = true;
     spinner.stop();
     const uptime = Math.floor((Date.now() - sessionStartTime) / 1000);
     const mins = Math.floor(uptime / 60);
@@ -221,6 +232,9 @@ async function startTunnel(
       token ? { headers: { Authorization: `Bearer ${token}` } } : undefined
     );
     activeWs = ws;
+    /** True once this socket has successfully registered a tunnel. A relay
+     * `error` before this point is a fatal registration failure. */
+    let registeredThisConnection = false;
 
     ws.on("unexpected-response", (_req, res) => {
       if (res.statusCode === 401) {
@@ -238,7 +252,7 @@ async function startTunnel(
       ws.send(
         serializeMessage({
           type: "register",
-          subdomain,
+          subdomain: currentSubdomain,
           protocolVersion: PROTOCOL_VERSION,
         })
       );
@@ -271,6 +285,10 @@ async function startTunnel(
         case "registered": {
           spinner.stop();
           reconnectAttempts = 0;
+          registeredThisConnection = true;
+          // Remember the relay-assigned subdomain so a reconnect re-claims the
+          // same name instead of silently rotating the public URL.
+          currentSubdomain = msg.subdomain;
           sessionStartTime = Date.now();
           sessionRequestCount = 0;
 
@@ -366,6 +384,25 @@ async function startTunnel(
         }
 
         case "error":
+          if (!registeredThisConnection) {
+            // A relay error before we registered means the tunnel never came
+            // up (bad token, taken subdomain, protocol mismatch). Don't sit
+            // idle — surface it and exit.
+            shuttingDown = true;
+            spinner.stop();
+            console.error("");
+            console.error(`  \x1b[31m✗ Could not register tunnel:\x1b[0m ${msg.message}`);
+            if (/already in use/i.test(msg.message)) {
+              console.error(`    Try a different name with \x1b[1m--subdomain <name>\x1b[0m, or omit it for a random one.`);
+            }
+            console.error("");
+            try {
+              ws.close(1000, "Registration failed");
+            } catch {
+              // ignore
+            }
+            process.exit(1);
+          }
           console.error(`Relay error: ${msg.message}`);
           break;
       }
@@ -377,13 +414,41 @@ async function startTunnel(
         localWs.close(1001, "Tunnel disconnected");
       }
       localWsConnections.clear();
+      // Abandon any in-flight outbound requests for this connection.
+      for (const [, ob] of outboundRequests) {
+        if (!ob.req.destroyed) ob.req.destroy();
+      }
+      outboundRequests.clear();
+
+      if (shuttingDown) return;
+
       reconnectAttempts++;
-      spinner.start(`Reconnecting to relay (attempt ${reconnectAttempts})...`);
-      setTimeout(connect, 3000);
+      if (reconnectAttempts > MAX_RECONNECT_ATTEMPTS) {
+        spinner.stop();
+        console.error("");
+        console.error(
+          `  \x1b[31m✗ Relay unreachable\x1b[0m after ${MAX_RECONNECT_ATTEMPTS} attempts. Giving up.`
+        );
+        console.error(`    Check the relay is running and reachable at ${relayUrl}.`);
+        console.error("");
+        process.exit(1);
+      }
+
+      // Exponential backoff with jitter, capped at MAX_RECONNECT_MS.
+      const backoff = Math.min(
+        MAX_RECONNECT_MS,
+        BASE_RECONNECT_MS * 2 ** (reconnectAttempts - 1)
+      );
+      const delay = backoff + Math.floor(Math.random() * backoff * 0.3);
+      spinner.start(
+        `Reconnecting to relay (attempt ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS}, retrying in ${Math.round(delay / 1000)}s)...`
+      );
+      setTimeout(connect, delay);
     });
 
     ws.on("error", (err) => {
-      console.error(`WebSocket error: ${err.message}`);
+      // The accompanying "close" event drives reconnect/backoff; just note it.
+      if (!shuttingDown) spinner.update(`Connection error: ${err.message}`);
     });
   };
 
@@ -434,9 +499,10 @@ function handleRequestHead(
   const start = performance.now();
 
   const localHeaders = { ...headers };
+  // Drop hop-by-hop headers (incl. transfer-encoding, which we re-frame) before
+  // forwarding to the local service.
+  stripHopByHopHeaders(localHeaders);
   localHeaders["host"] = `localhost:${localPort}`;
-  // We re-frame the body ourselves, so drop the inbound framing header.
-  delete localHeaders["transfer-encoding"];
 
   const req = http.request(
     { hostname: "localhost", port: localPort, path, method, headers: localHeaders },

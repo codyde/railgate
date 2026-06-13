@@ -47,9 +47,15 @@ relay.httpServer.listen(PORT, () => {
   );
 });
 
+let shuttingDown = false;
 for (const signal of ["SIGTERM", "SIGINT"] as const) {
   process.on(signal, () => {
-    console.log(`[railgate] ${signal} received — shutting down`);
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.log(`[railgate] ${signal} received — draining and shutting down`);
     relay.close().then(() => process.exit(0));
+    // Safety net: never hang the platform's shutdown longer than the grace
+    // window plus a margin.
+    setTimeout(() => process.exit(0), 8_000).unref();
   });
 }

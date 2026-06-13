@@ -28,7 +28,10 @@ function startMockClient(port: number, subdomain: string): Promise<WebSocket> {
     headers: { Authorization: `Bearer ${TOKEN}` },
   });
 
-  const inflight = new Map<string, { path: string; chunks: Buffer[] }>();
+  const inflight = new Map<
+    string,
+    { path: string; headers: Record<string, string | string[]>; chunks: Buffer[] }
+  >();
 
   ws.on("message", (data, isBinary) => {
     if (isBinary) {
@@ -40,15 +43,17 @@ function startMockClient(port: number, subdomain: string): Promise<WebSocket> {
     }
     const msg = parseMessage(data.toString()) as ServerMessage;
     if (msg.type === "request-head") {
-      inflight.set(msg.id, { path: msg.path, chunks: [] });
+      inflight.set(msg.id, { path: msg.path, headers: msg.headers, chunks: [] });
     } else if (msg.type === "request-end") {
       const entry = inflight.get(msg.id);
       if (!entry) return;
       inflight.delete(msg.id);
 
-      const body = entry.path.includes("/echo")
-        ? Buffer.concat(entry.chunks)
-        : Buffer.from("hello world");
+      const body = entry.path.includes("/headers")
+        ? Buffer.from(JSON.stringify(entry.headers))
+        : entry.path.includes("/echo")
+          ? Buffer.concat(entry.chunks)
+          : Buffer.from("hello world");
 
       ws.send(
         serializeMessage({
@@ -58,7 +63,7 @@ function startMockClient(port: number, subdomain: string): Promise<WebSocket> {
           headers: { "content-type": "application/octet-stream" },
         })
       );
-      if (entry.path.includes("/echo")) {
+      if (entry.path.includes("/echo") || entry.path.includes("/headers")) {
         for (const piece of chunkBuffer(body)) {
           ws.send(encodeBinaryFrame(FRAME_RESPONSE_BODY, msg.id, piece));
         }
@@ -139,6 +144,16 @@ describe("relay streaming proxy (protocol v2)", () => {
   it("rejects an unknown subdomain with 502", async () => {
     const res = await httpRequest(port, "/_t/nope/");
     expect(res.status).toBe(502);
+  });
+
+  it("injects X-Forwarded-* headers toward the local service", async () => {
+    const res = await httpRequest(port, "/_t/test/headers");
+    expect(res.status).toBe(200);
+    const headers = JSON.parse(res.body.toString());
+    expect(headers["x-forwarded-proto"]).toBe("http");
+    expect(headers["x-forwarded-for"]).toBeTruthy();
+    expect(headers["x-forwarded-host"]).toBeTruthy();
+    expect(headers["forwarded"]).toMatch(/proto=http/);
   });
 
   it("streams a request body through and back (echo)", async () => {

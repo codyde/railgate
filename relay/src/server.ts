@@ -72,6 +72,32 @@ function tokensMatch(provided: string, expected: string): boolean {
   return timingSafeEqual(a, b);
 }
 
+/**
+ * Add standard reverse-proxy headers so the local service can recover the
+ * original client IP, protocol, and host. Appends to an existing
+ * X-Forwarded-For chain rather than overwriting it.
+ */
+function addForwardedHeaders(
+  headers: Record<string, string | string[]>,
+  req: IncomingMessage,
+  protocol: "http" | "https"
+): void {
+  const clientIp = req.socket.remoteAddress;
+  if (!clientIp) return;
+  const originalHost = req.headers.host ?? "";
+
+  const existing = headers["x-forwarded-for"];
+  const prior = Array.isArray(existing) ? existing.join(", ") : existing;
+  headers["x-forwarded-for"] = prior ? `${prior}, ${clientIp}` : clientIp;
+  headers["x-forwarded-proto"] = protocol;
+  if (originalHost) headers["x-forwarded-host"] = originalHost;
+
+  // IPv6 literals must be bracketed and quoted in the Forwarded header.
+  const forwardedFor = clientIp.includes(":") ? `"[${clientIp}]"` : clientIp;
+  const hostPart = originalHost ? `;host=${originalHost}` : "";
+  headers["forwarded"] = `for=${forwardedFor}${hostPart};proto=${protocol}`;
+}
+
 export function createRelay(options: RelayOptions): Relay {
   const { baseDomain, protocol } = options;
   const token = options.token;
@@ -161,6 +187,7 @@ export function createRelay(options: RelayOptions): Relay {
     for (const [key, value] of Object.entries(req.headers)) {
       if (value !== undefined) flatHeaders[key] = value;
     }
+    addForwardedHeaders(flatHeaders, req, protocol);
 
     const headTimer = setTimeout(() => {
       const pending = tunnel.pendingRequests.get(requestId);
@@ -517,17 +544,42 @@ export function createRelay(options: RelayOptions): Relay {
     });
   });
 
+  function pendingCount(): number {
+    let n = 0;
+    for (const tunnel of tunnels.values()) n += tunnel.pendingRequests.size;
+    return n;
+  }
+
+  /**
+   * Stop accepting new connections, let in-flight requests finish for up to
+   * `graceMs`, then force-close any remaining tunnels and proxied sockets.
+   */
+  async function close(graceMs = 5_000): Promise<void> {
+    const fullyClosed = new Promise<void>((resolve) => server.close(() => resolve()));
+
+    const deadline = Date.now() + graceMs;
+    while (pendingCount() > 0 && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 100));
+    }
+
+    for (const tunnel of tunnels.values()) {
+      for (const [, pending] of tunnel.pendingRequests) {
+        if (pending.headTimer) clearTimeout(pending.headTimer);
+        if (!pending.res.writableEnded) pending.res.end();
+      }
+      for (const [, conn] of tunnel.wsConnections) {
+        conn.close(1001, "Relay shutting down");
+      }
+      tunnel.ws.close(1001, "Relay shutting down");
+    }
+    wss.close();
+    proxyWss.close();
+    await fullyClosed;
+  }
+
   return {
     httpServer: server,
     tunnelCount: () => tunnels.size,
-    close: () =>
-      new Promise<void>((resolve) => {
-        for (const tunnel of tunnels.values()) {
-          tunnel.ws.close(1001, "Relay shutting down");
-        }
-        wss.close();
-        proxyWss.close();
-        server.close(() => resolve());
-      }),
+    close,
   };
 }

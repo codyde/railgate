@@ -8,6 +8,7 @@ import {
   decodeBinaryFrame,
   chunkBuffer,
   streamBodyFrames,
+  stripHopByHopHeaders,
   FRAME_RESPONSE_BODY,
   BODY_CHUNK_SIZE,
   WS_READY_OPEN,
@@ -133,6 +134,32 @@ describe("streamBodyFrames", () => {
 
     expect(limitHit).toBe(true);
     expect(ended).toBe(false);
+  });
+});
+
+describe("stripHopByHopHeaders", () => {
+  it("removes standard hop-by-hop headers", () => {
+    const headers = stripHopByHopHeaders({
+      "transfer-encoding": "chunked",
+      "keep-alive": "timeout=5",
+      upgrade: "h2c",
+      "content-type": "text/plain",
+    });
+    expect(headers["transfer-encoding"]).toBeUndefined();
+    expect(headers["keep-alive"]).toBeUndefined();
+    expect(headers["upgrade"]).toBeUndefined();
+    expect(headers["content-type"]).toBe("text/plain");
+  });
+
+  it("removes headers named in the Connection header", () => {
+    const headers = stripHopByHopHeaders({
+      connection: "close, X-Custom-Hop",
+      "x-custom-hop": "secret",
+      "x-keep": "yes",
+    });
+    expect(headers["connection"]).toBeUndefined();
+    expect(headers["x-custom-hop"]).toBeUndefined();
+    expect(headers["x-keep"]).toBe("yes");
   });
 });
 

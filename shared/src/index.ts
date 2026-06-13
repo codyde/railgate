@@ -271,6 +271,40 @@ export function streamBodyFrames(
   });
 }
 
+// ── Header hygiene ──
+
+/** Connection-specific headers that must not be forwarded by a proxy
+ * (RFC 7230 §6.1). */
+export const HOP_BY_HOP_HEADERS = [
+  "connection",
+  "keep-alive",
+  "proxy-authenticate",
+  "proxy-authorization",
+  "te",
+  "trailer",
+  "transfer-encoding",
+  "upgrade",
+] as const;
+
+/**
+ * Strip hop-by-hop headers from a header map in place, including any headers
+ * explicitly listed in the `Connection` header. Mutates and returns the map.
+ */
+export function stripHopByHopHeaders(
+  headers: Record<string, string | string[]>
+): Record<string, string | string[]> {
+  const connection = headers["connection"];
+  if (connection) {
+    const listed = (Array.isArray(connection) ? connection.join(",") : connection)
+      .split(",")
+      .map((t) => t.trim().toLowerCase())
+      .filter(Boolean);
+    for (const name of listed) delete headers[name];
+  }
+  for (const name of HOP_BY_HOP_HEADERS) delete headers[name];
+  return headers;
+}
+
 // ── Helpers ──
 
 export function generateSubdomain(): string {
