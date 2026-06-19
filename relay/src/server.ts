@@ -21,6 +21,7 @@ import {
   rewriteHtmlPaths,
   isHtmlContentType,
   isCompressed,
+  sanitizeCloseCode,
   type ClientMessage,
   type ServerMessage,
   type WsOpenMessage,
@@ -604,7 +605,7 @@ export function createRelay(options: RelayOptions): Relay {
           if (!tunnel) return;
           const conn = tunnel.wsConnections.get(msg.id);
           if (conn) {
-            conn.close(msg.code || 1000, msg.reason);
+            conn.close(sanitizeCloseCode(msg.code), msg.reason);
             tunnel.wsConnections.delete(msg.id);
           }
           break;

@@ -17,6 +17,7 @@ import {
   decodeBinaryFrame,
   streamBodyFrames,
   stripHopByHopHeaders,
+  sanitizeCloseCode,
   type ServerMessage,
   type WsOpenedMessage,
   type WsFailedMessage,
@@ -387,7 +388,7 @@ async function startTunnel(
         case "ws-close": {
           const localWs = localWsConnections.get(msg.id);
           if (localWs) {
-            localWs.close(msg.code || 1000, msg.reason);
+            localWs.close(sanitizeCloseCode(msg.code), msg.reason);
             localWsConnections.delete(msg.id);
           }
           break;

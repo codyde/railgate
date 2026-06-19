@@ -125,6 +125,26 @@ export interface WsCloseMessage {
   reason?: string;
 }
 
+/**
+ * Coerce a WebSocket close code into one that is valid to *send*.
+ *
+ * Peers can close with reserved codes like 1005 (no status received) or 1006
+ * (abnormal closure). These are valid to receive but throw if you try to send
+ * them back through `ws`. We forward the peer's code across the tunnel, so the
+ * other end must sanitize before calling `.close(code)` or the process crashes.
+ * Mirrors `ws`'s own `isValidStatusCode`; anything invalid falls back to 1000.
+ */
+export function sanitizeCloseCode(code: number | undefined): number {
+  if (
+    typeof code === "number" &&
+    ((code >= 1000 && code <= 1014 && code !== 1004 && code !== 1005 && code !== 1006) ||
+      (code >= 3000 && code <= 4999))
+  ) {
+    return code;
+  }
+  return 1000;
+}
+
 export type ClientMessage =
   | RegisterMessage
   | ResponseHeadMessage

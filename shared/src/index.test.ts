@@ -9,6 +9,7 @@ import {
   chunkBuffer,
   streamBodyFrames,
   stripHopByHopHeaders,
+  sanitizeCloseCode,
   FRAME_RESPONSE_BODY,
   BODY_CHUNK_SIZE,
   WS_READY_OPEN,
@@ -160,6 +161,31 @@ describe("stripHopByHopHeaders", () => {
     expect(headers["connection"]).toBeUndefined();
     expect(headers["x-custom-hop"]).toBeUndefined();
     expect(headers["x-keep"]).toBe("yes");
+  });
+});
+
+describe("sanitizeCloseCode", () => {
+  it("passes through valid sendable codes", () => {
+    expect(sanitizeCloseCode(1000)).toBe(1000);
+    expect(sanitizeCloseCode(1001)).toBe(1001);
+    expect(sanitizeCloseCode(1011)).toBe(1011);
+    expect(sanitizeCloseCode(3000)).toBe(3000);
+    expect(sanitizeCloseCode(4999)).toBe(4999);
+  });
+
+  it("coerces reserved codes (1004/1005/1006/1015) to 1000", () => {
+    expect(sanitizeCloseCode(1004)).toBe(1000);
+    expect(sanitizeCloseCode(1005)).toBe(1000);
+    expect(sanitizeCloseCode(1006)).toBe(1000);
+    expect(sanitizeCloseCode(1015)).toBe(1000);
+  });
+
+  it("coerces out-of-range and missing codes to 1000", () => {
+    expect(sanitizeCloseCode(undefined)).toBe(1000);
+    expect(sanitizeCloseCode(0)).toBe(1000);
+    expect(sanitizeCloseCode(999)).toBe(1000);
+    expect(sanitizeCloseCode(2999)).toBe(1000);
+    expect(sanitizeCloseCode(5000)).toBe(1000);
   });
 });
 
