@@ -230,11 +230,51 @@ describe("relay streaming proxy (protocol v2)", () => {
     expect(res.body.equals(payload)).toBe(true);
   });
 
-  it("serves the dashboard HTML page", async () => {
-    const res = await httpRequest(port, "/_railgate/dashboard");
+  it("serves the dashboard at the relay root", async () => {
+    const res = await httpRequest(port, "/");
     expect(res.status).toBe(200);
     expect(res.headers["content-type"]).toMatch(/text\/html/);
     expect(res.body.toString()).toContain("<title>railgate</title>");
+  });
+
+  it("serves the dashboard on the reserved 'dashboard' subdomain", async () => {
+    const res = await httpRequest(port, "/", {
+      headers: { host: `dashboard.127.0.0.1:${port}` },
+    });
+    expect(res.status).toBe(200);
+    expect(res.headers["content-type"]).toMatch(/text\/html/);
+    expect(res.body.toString()).toContain("<title>railgate</title>");
+  });
+
+  it("serves the API on the reserved 'dashboard' subdomain", async () => {
+    const res = await httpRequest(port, "/_railgate/api/tunnels", {
+      headers: { host: `dashboard.127.0.0.1:${port}` },
+    });
+    expect(res.status).toBe(200);
+    expect(res.headers["content-type"]).toMatch(/application\/json/);
+    const data = JSON.parse(res.body.toString());
+    expect(Array.isArray(data.active)).toBe(true);
+  });
+
+  it("refuses to register the reserved 'dashboard' subdomain", async () => {
+    const ws = new WebSocket(`ws://127.0.0.1:${port}${CONTROL_PATH}`, {
+      headers: { Authorization: `Bearer ${TOKEN}` },
+    });
+    const result = await new Promise<ServerMessage>((resolve, reject) => {
+      ws.on("error", reject);
+      ws.on("open", () => {
+        ws.send(
+          serializeMessage({ type: "register", subdomain: "dashboard", protocolVersion: PROTOCOL_VERSION })
+        );
+      });
+      ws.on("message", (data, isBinary) => {
+        if (isBinary) return;
+        resolve(parseMessage(data.toString()) as ServerMessage);
+      });
+    });
+    ws.close();
+    expect(result.type).toBe("error");
+    expect((result as { message: string }).message).toMatch(/reserved/i);
   });
 
   it("reports the active tunnel and its request count via the API", async () => {

@@ -154,13 +154,19 @@ async function runAutoSetup(): Promise<void> {
   try {
     const deployed = await deployRailgateRelay(token, projectNameInput, {
       onPhase: (msg) => s.message(msg),
+      onBrowserOpened: () => {
+        s.note("Opening Railway in your browser to authorize");
+        s.message("Waiting for Railway authorization");
+      },
       onPromptUrl: (url) => {
         lastBrowserUrl = url;
-        // Surface the URL statically (it's long and wraps) in case the browser
-        // launch failed silently (SSH session, headless WSL, etc.), then keep
-        // a short animated status line going.
-        s.note(`Opening Railway to authorize in your browser.\nIf it didn't open, visit:\n${url}`);
+        // Browser launch failed (SSH session, headless WSL, etc.). Surface the
+        // URL statically (it's long and wraps) so the user can paste it.
+        s.note(`Couldn't open your browser. Visit this URL to authorize:\n${url}`);
         s.message("Waiting for Railway authorization");
+      },
+      onAuthenticated: () => {
+        s.success("Authenticated with Railway");
       },
     });
 

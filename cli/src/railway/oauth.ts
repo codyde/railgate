@@ -234,16 +234,25 @@ async function bindCallbackListener(
   return { port, codePromise };
 }
 
+export interface LoginCallbacks {
+  /** The browser couldn't be opened — surface this URL as a fallback. */
+  onPromptUrl?: (url: string) => void;
+  /** The browser was launched; we're now waiting on the user to authorize. */
+  onBrowserOpened?: () => void;
+  /** Authorization completed and the token was saved. */
+  onAuthenticated?: () => void;
+}
+
 /**
  * Run the full browser-based OAuth PKCE flow and persist the resulting auth.
  *
- * onPromptUrl is called with the authorization URL so the caller can display
- * it to the user (useful for SSH sessions where `open` may not reach a real
- * browser, or when the browser launch silently fails).
+ * The authorization URL is only surfaced (via onPromptUrl) when the browser
+ * launch fails, so the happy path stays clean. onAuthenticated fires once the
+ * token is saved so callers can acknowledge success.
  */
-export async function loginWithBrowser(opts: {
-  onPromptUrl?: (url: string) => void;
-} = {}): Promise<RailwayAuth> {
+export async function loginWithBrowser(
+  opts: LoginCallbacks = {}
+): Promise<RailwayAuth> {
   const pkce = generatePkce();
   const state = generateState();
 
@@ -251,14 +260,12 @@ export async function loginWithBrowser(opts: {
   const redirectUri = `http://127.0.0.1:${port}/callback`;
   const authUrl = buildAuthorizationUrl(redirectUri, pkce, state);
 
-  opts.onPromptUrl?.(authUrl);
-
-  // Open the browser. If it fails (headless, SSH), the user can paste the
-  // URL the caller already printed.
   try {
     await openUrl(authUrl);
+    opts.onBrowserOpened?.();
   } catch {
-    // No-op — URL was already surfaced via onPromptUrl.
+    // Headless/SSH — fall back to showing the URL for manual paste.
+    opts.onPromptUrl?.(authUrl);
   }
 
   const code = await codePromise;
@@ -269,6 +276,7 @@ export async function loginWithBrowser(opts: {
   );
   const auth = tokenToAuth(tokenResp);
   saveRailwayAuth(auth);
+  opts.onAuthenticated?.();
   return auth;
 }
 
@@ -280,9 +288,9 @@ export async function loginWithBrowser(opts: {
  * - Saved auth expired but refresh token present → refresh; on failure, re-login.
  * - Saved auth expired with no refresh token → re-login.
  */
-export async function getAccessToken(opts: {
-  onPromptUrl?: (url: string) => void;
-} = {}): Promise<string> {
+export async function getAccessToken(
+  opts: LoginCallbacks = {}
+): Promise<string> {
   const existing = loadRailwayAuth();
   if (!existing) {
     const auth = await loginWithBrowser(opts);

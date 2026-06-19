@@ -12,6 +12,9 @@
 const RESET = "\x1b[0m";
 const DIM = "\x1b[2m";
 const GUTTER = `\x1b[90m│${RESET}  `;
+/** A blank gutter line, matching clack's spacer between sections. */
+const BAR = `\x1b[90m│${RESET}`;
+const CHECK = "\x1b[32m✔\x1b[0m";
 
 /** Rotating square — the filled quadrant walks clockwise. */
 export const SPINNER_FRAMES = ["◰", "◳", "◲", "◱"];
@@ -58,6 +61,8 @@ export interface Loader {
   message(message: string): void;
   /** Print a static block above the spinner (for long/wrapping content). */
   note(block: string): void;
+  /** Print a permanent success line above the spinner and keep spinning. */
+  success(message: string): void;
   stop(message?: string, code?: number): void;
 }
 
@@ -76,7 +81,8 @@ export function createLoader(): Loader {
     out.write(`\r\x1b[2K${GUTTER}${glyph} ${paintShimmer(line, head)}`);
 
     frame++;
-    head += 0.85;
+    // Sweep speed of the gradient highlight (chars per frame).
+    head += 1.275;
     if (head > line.length + BAND) head = -BAND;
   }
 
@@ -87,6 +93,7 @@ export function createLoader(): Loader {
       return;
     }
     out.write("\x1b[?25l"); // hide cursor
+    out.write(`${BAR}\n`); // spacer so the block isn't flush with the prompt above
     frame = 0;
     head = -BAND;
     render();
@@ -113,6 +120,17 @@ export function createLoader(): Loader {
     render(); // redraw the spinner on the fresh line below
   }
 
+  function success(message: string): void {
+    const line = `${GUTTER}${CHECK} ${firstLine(message)}`;
+    if (!isTty) {
+      out.write(`${line}\n`);
+      return;
+    }
+    out.write("\r\x1b[2K"); // drop the current spinner line
+    out.write(`${line}\n`); // print the acknowledgment permanently
+    render(); // redraw the spinner on the fresh line below
+  }
+
   function stop(message?: string, code = 0): void {
     if (timer) {
       clearInterval(timer);
@@ -129,7 +147,7 @@ export function createLoader(): Loader {
     out.write("\x1b[?25h"); // show cursor
   }
 
-  return { start, message, note, stop };
+  return { start, message, note, success, stop };
 }
 
 // Make sure a crash mid-spin never leaves the user's cursor hidden.

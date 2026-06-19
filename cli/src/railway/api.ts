@@ -60,8 +60,12 @@ function hasAuthErrors(errors: GqlError[] | undefined): boolean {
 }
 
 export interface GqlOptions {
-  /** Surface the auth URL when a fresh login is required. */
+  /** Surface the auth URL only when the browser can't be opened. */
   onPromptUrl?: (url: string) => void;
+  /** The browser was launched and we're awaiting authorization. */
+  onBrowserOpened?: () => void;
+  /** Authorization completed successfully. */
+  onAuthenticated?: () => void;
 }
 
 /**
@@ -188,6 +192,10 @@ async function refreshOrRelogin(opts: GqlOptions): Promise<string> {
       // Fall through to interactive login.
     }
   }
-  const fresh = await loginWithBrowser({ onPromptUrl: opts.onPromptUrl });
+  const fresh = await loginWithBrowser({
+    onPromptUrl: opts.onPromptUrl,
+    onBrowserOpened: opts.onBrowserOpened,
+    onAuthenticated: opts.onAuthenticated,
+  });
   return fresh.accessToken;
 }

@@ -76,8 +76,12 @@ export interface DeployedRelay {
 export interface DeployProgress {
   /** Called whenever the high-level phase changes (for spinner text updates). */
   onPhase?: (msg: string) => void;
-  /** Forwarded to OAuth login when a fresh token is needed. */
+  /** Forwarded to OAuth login as a fallback when the browser can't be opened. */
   onPromptUrl?: (url: string) => void;
+  /** The browser was launched and we're awaiting Railway authorization. */
+  onBrowserOpened?: () => void;
+  /** Railway authorization completed successfully. */
+  onAuthenticated?: () => void;
 }
 
 /**
@@ -90,7 +94,11 @@ export async function deployRailgateRelay(
   projectName: string,
   progress: DeployProgress = {}
 ): Promise<DeployedRelay> {
-  const gqlOpts: GqlOptions = { onPromptUrl: progress.onPromptUrl };
+  const gqlOpts: GqlOptions = {
+    onPromptUrl: progress.onPromptUrl,
+    onBrowserOpened: progress.onBrowserOpened,
+    onAuthenticated: progress.onAuthenticated,
+  };
 
   // The serializedConfig is embedded (see template-config.ts for why) so we
   // skip the runtime template fetch entirely.

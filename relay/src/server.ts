@@ -32,8 +32,11 @@ import { createHash, timingSafeEqual } from "crypto";
 import { createStore, type TunnelStore } from "./store.js";
 import { DASHBOARD_HTML, type DashboardData } from "./dashboard.js";
 
-const DASHBOARD_PATH = "/_railgate/dashboard";
 const TUNNELS_API_PATH = "/_railgate/api/tunnels";
+/** Reserved subdomain that always serves the dashboard. Lets wildcard custom
+ * domains (whose apex isn't covered by the wildcard cert) reach it at
+ * dashboard.<base>. Cannot be registered as a tunnel. */
+const DASHBOARD_SUBDOMAIN = "dashboard";
 /** How many recently-closed tunnels the dashboard API returns. */
 const HISTORY_LIMIT = 100;
 
@@ -204,6 +207,42 @@ export function createRelay(options: RelayOptions): Relay {
     });
   }
 
+  function serveDashboardPage(res: ServerResponse): void {
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+    res.end(DASHBOARD_HTML);
+  }
+
+  function serveTunnelsApi(res: ServerResponse): void {
+    const data: DashboardData = {
+      baseDomain,
+      protocol,
+      openMode,
+      durableHistory: store.durable,
+      active: [...tunnels.values()].map((t) => ({
+        subdomain: t.subdomain,
+        url: `${protocol}://${t.subdomain}.${baseDomain}`,
+        clientIp: t.clientIp,
+        openedAt: t.createdAt,
+        requestCount: t.requestCount,
+        wsConnections: t.wsConnections.size,
+        pendingRequests: t.pendingRequests.size,
+      })),
+      history: store.recentClosed(HISTORY_LIMIT).map((r) => ({
+        subdomain: r.subdomain,
+        clientIp: r.clientIp,
+        openedAt: r.openedAt,
+        closedAt: r.closedAt,
+        requestCount: r.requestCount,
+        closeReason: r.closeReason,
+      })),
+    };
+    res.writeHead(200, {
+      "Content-Type": "application/json",
+      "Cache-Control": "no-store",
+    });
+    res.end(JSON.stringify(data));
+  }
+
   // ── HTTP request handling ──
 
   const server = createServer((req: IncomingMessage, res: ServerResponse) => {
@@ -229,44 +268,6 @@ export function createRelay(options: RelayOptions): Relay {
       return;
     }
 
-    if (url === DASHBOARD_PATH) {
-      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-      res.end(DASHBOARD_HTML);
-      return;
-    }
-
-    if (url === TUNNELS_API_PATH) {
-      const data: DashboardData = {
-        baseDomain,
-        protocol,
-        openMode,
-        durableHistory: store.durable,
-        active: [...tunnels.values()].map((t) => ({
-          subdomain: t.subdomain,
-          url: `${protocol}://${t.subdomain}.${baseDomain}`,
-          clientIp: t.clientIp,
-          openedAt: t.createdAt,
-          requestCount: t.requestCount,
-          wsConnections: t.wsConnections.size,
-          pendingRequests: t.pendingRequests.size,
-        })),
-        history: store.recentClosed(HISTORY_LIMIT).map((r) => ({
-          subdomain: r.subdomain,
-          clientIp: r.clientIp,
-          openedAt: r.openedAt,
-          closedAt: r.closedAt,
-          requestCount: r.requestCount,
-          closeReason: r.closeReason,
-        })),
-      };
-      res.writeHead(200, {
-        "Content-Type": "application/json",
-        "Cache-Control": "no-store",
-      });
-      res.end(JSON.stringify(data));
-      return;
-    }
-
     let subdomain = extractSubdomain(host);
     let forwardPath = url;
     let pathPrefix: string | null = null;
@@ -280,10 +281,26 @@ export function createRelay(options: RelayOptions): Relay {
     }
 
     if (!subdomain) {
+      // The relay root opens the dashboard (works for Railway's default domain,
+      // whose base host is reachable). Other base-domain paths still 200 with
+      // the plain banner.
+      if (url === "/") return serveDashboardPage(res);
+      if (url === TUNNELS_API_PATH) return serveTunnelsApi(res);
+
       notifyPrefixEscape(req);
       res.writeHead(200, { "Content-Type": "text/plain" });
       res.end("railgate relay server\n");
       return;
+    }
+
+    // The reserved subdomain always serves the dashboard. This is the path that
+    // works on wildcard custom domains, where the apex isn't cert-covered but
+    // dashboard.<base> is.
+    if (subdomain === DASHBOARD_SUBDOMAIN) {
+      if (forwardPath === TUNNELS_API_PATH || url === TUNNELS_API_PATH) {
+        return serveTunnelsApi(res);
+      }
+      return serveDashboardPage(res);
     }
 
     const tunnel = tunnels.get(subdomain);
@@ -550,6 +567,15 @@ export function createRelay(options: RelayOptions): Relay {
             return;
           }
           let subdomain = msg.subdomain?.toLowerCase().replace(/[^a-z0-9-]/g, "");
+          if (subdomain === DASHBOARD_SUBDOMAIN) {
+            ws.send(
+              serializeMessage({
+                type: "error",
+                message: `Subdomain "${DASHBOARD_SUBDOMAIN}" is reserved for the relay dashboard`,
+              })
+            );
+            return;
+          }
           if (subdomain && tunnels.has(subdomain)) {
             const existing = tunnels.get(subdomain)!;
             if (existing.ws.readyState !== WS_READY_OPEN) {
