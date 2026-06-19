@@ -29,6 +29,13 @@ import {
 } from "@railgate/shared";
 import { randomUUID } from "crypto";
 import { createHash, timingSafeEqual } from "crypto";
+import { createStore, type TunnelStore } from "./store.js";
+import { DASHBOARD_HTML, type DashboardData } from "./dashboard.js";
+
+const DASHBOARD_PATH = "/_railgate/dashboard";
+const TUNNELS_API_PATH = "/_railgate/api/tunnels";
+/** How many recently-closed tunnels the dashboard API returns. */
+const HISTORY_LIMIT = 100;
 
 // ── Configuration ──
 
@@ -43,6 +50,8 @@ export interface RelayOptions {
   maxBodyBytes?: number;
   /** Time-to-first-byte budget for the local service. Default 30s. */
   requestTimeoutMs?: number;
+  /** Tunnel history store. Defaults to one resolved from the environment. */
+  store?: TunnelStore;
 }
 
 export interface Relay {
@@ -77,6 +86,12 @@ interface Tunnel {
   /** Set once we've warned this client that requests are escaping the path
    * prefix, so the advisory is sent only once per session. */
   warnedPathLeak: boolean;
+  /** History row id, epoch-ms open time, client IP, and lifetime request
+   * count — surfaced on the dashboard and persisted on close. */
+  recordId: number;
+  createdAt: number;
+  clientIp: string | null;
+  requestCount: number;
 }
 
 const DEFAULT_MAX_BODY_BYTES = 100 * 1024 * 1024;
@@ -116,12 +131,28 @@ function addForwardedHeaders(
   headers["forwarded"] = `for=${forwardedFor}${hostPart};proto=${protocol}`;
 }
 
+/**
+ * Best-effort client IP. The relay sits behind Railway's proxy, so the real
+ * caller is the first hop of X-Forwarded-For when present; fall back to the
+ * socket address otherwise.
+ */
+function clientIpOf(req: IncomingMessage): string | null {
+  const xff = req.headers["x-forwarded-for"];
+  const raw = Array.isArray(xff) ? xff[0] : xff;
+  if (raw) {
+    const first = raw.split(",")[0]?.trim();
+    if (first) return first;
+  }
+  return req.socket.remoteAddress ?? null;
+}
+
 export function createRelay(options: RelayOptions): Relay {
   const { baseDomain, protocol } = options;
   const token = options.token;
   const openMode = !token;
   const maxBodyBytes = options.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES;
   const requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
+  const store = options.store ?? createStore();
 
   /** subdomain → Tunnel */
   const tunnels = new Map<string, Tunnel>();
@@ -198,6 +229,44 @@ export function createRelay(options: RelayOptions): Relay {
       return;
     }
 
+    if (url === DASHBOARD_PATH) {
+      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+      res.end(DASHBOARD_HTML);
+      return;
+    }
+
+    if (url === TUNNELS_API_PATH) {
+      const data: DashboardData = {
+        baseDomain,
+        protocol,
+        openMode,
+        durableHistory: store.durable,
+        active: [...tunnels.values()].map((t) => ({
+          subdomain: t.subdomain,
+          url: `${protocol}://${t.subdomain}.${baseDomain}`,
+          clientIp: t.clientIp,
+          openedAt: t.createdAt,
+          requestCount: t.requestCount,
+          wsConnections: t.wsConnections.size,
+          pendingRequests: t.pendingRequests.size,
+        })),
+        history: store.recentClosed(HISTORY_LIMIT).map((r) => ({
+          subdomain: r.subdomain,
+          clientIp: r.clientIp,
+          openedAt: r.openedAt,
+          closedAt: r.closedAt,
+          requestCount: r.requestCount,
+          closeReason: r.closeReason,
+        })),
+      };
+      res.writeHead(200, {
+        "Content-Type": "application/json",
+        "Cache-Control": "no-store",
+      });
+      res.end(JSON.stringify(data));
+      return;
+    }
+
     let subdomain = extractSubdomain(host);
     let forwardPath = url;
     let pathPrefix: string | null = null;
@@ -229,6 +298,8 @@ export function createRelay(options: RelayOptions): Relay {
       res.end("Tunnel client disconnected\n");
       return;
     }
+
+    tunnel.requestCount++;
 
     const requestId = randomUUID();
     const flatHeaders: Record<string, string | string[]> = {};
@@ -405,9 +476,10 @@ export function createRelay(options: RelayOptions): Relay {
 
   // ── Control channel ──
 
-  wss.on("connection", (ws: WebSocket) => {
+  wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
     let tunnel: Tunnel | null = null;
     let alive = true;
+    const clientIp = clientIpOf(req);
 
     const heartbeat = setInterval(() => {
       if (ws.readyState === WS_READY_OPEN) {
@@ -494,12 +566,18 @@ export function createRelay(options: RelayOptions): Relay {
           }
           if (!subdomain) subdomain = generateSubdomain();
 
+          const createdAt = Date.now();
+          const recordId = store.open({ subdomain, clientIp, openedAt: createdAt });
           tunnel = {
             subdomain,
             ws,
             pendingRequests: new Map(),
             wsConnections: new Map(),
             warnedPathLeak: false,
+            recordId,
+            createdAt,
+            clientIp,
+            requestCount: 0,
           };
           tunnels.set(subdomain, tunnel);
 
@@ -632,6 +710,11 @@ export function createRelay(options: RelayOptions): Relay {
         }
         tunnel.wsConnections.clear();
         tunnels.delete(tunnel.subdomain);
+        store.markClosed(tunnel.recordId, {
+          closedAt: Date.now(),
+          requestCount: tunnel.requestCount,
+          reason: "disconnected",
+        });
       }
     });
 
@@ -658,6 +741,7 @@ export function createRelay(options: RelayOptions): Relay {
       await new Promise((r) => setTimeout(r, 100));
     }
 
+    const shutdownAt = Date.now();
     for (const tunnel of tunnels.values()) {
       for (const [, pending] of tunnel.pendingRequests) {
         if (pending.headTimer) clearTimeout(pending.headTimer);
@@ -666,11 +750,17 @@ export function createRelay(options: RelayOptions): Relay {
       for (const [, conn] of tunnel.wsConnections) {
         conn.close(1001, "Relay shutting down");
       }
+      store.markClosed(tunnel.recordId, {
+        closedAt: shutdownAt,
+        requestCount: tunnel.requestCount,
+        reason: "relay shutting down",
+      });
       tunnel.ws.close(1001, "Relay shutting down");
     }
     wss.close();
     proxyWss.close();
     await fullyClosed;
+    store.dispose();
   }
 
   return {

@@ -46,6 +46,13 @@ interface DomainsResult {
   domains: { serviceDomains: Array<{ domain: string }> };
 }
 
+interface VolumeCreateResult {
+  volumeCreate: { id: string; name: string };
+}
+
+/** Must match RAILGATE_DATA_DIR in relay/Dockerfile. */
+const HISTORY_VOLUME_MOUNT_PATH = "/data";
+
 interface TemplateConfig {
   services?: Record<
     string,
@@ -154,6 +161,15 @@ export async function deployRailgateRelay(
     progress.onPhase?.("Discovering service domain");
     const service = await pollForService(projectCreate.id, gqlOpts);
 
+    progress.onPhase?.("Attaching tunnel history volume");
+    await createVolume(
+      projectCreate.id,
+      productionEnv.id,
+      service.id,
+      progress,
+      gqlOpts
+    );
+
     const baseDomain = await pollForDomain(
       projectCreate.id,
       productionEnv.id,
@@ -250,6 +266,40 @@ async function listServices(
     opts
   );
   return project.services.edges.map((e) => e.node);
+}
+
+/**
+ * Attach a persistent volume so the relay's tunnel history survives restarts
+ * and deploys. Best-effort: if the volume can't be created the relay still
+ * runs, just with in-memory history, so a failure here must not abort setup.
+ */
+async function createVolume(
+  projectId: string,
+  environmentId: string,
+  serviceId: string,
+  progress: DeployProgress,
+  opts: GqlOptions
+): Promise<void> {
+  try {
+    await gql<VolumeCreateResult>(
+      `mutation ($input: VolumeCreateInput!) {
+        volumeCreate(input: $input) { id name }
+      }`,
+      {
+        input: {
+          projectId,
+          environmentId,
+          serviceId,
+          mountPath: HISTORY_VOLUME_MOUNT_PATH,
+        },
+      },
+      opts
+    );
+  } catch {
+    progress.onPhase?.(
+      "Couldn't attach the history volume — the relay will use in-memory history"
+    );
+  }
 }
 
 /**

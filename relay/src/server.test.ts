@@ -229,4 +229,39 @@ describe("relay streaming proxy (protocol v2)", () => {
     expect(res.body.length).toBe(payload.length);
     expect(res.body.equals(payload)).toBe(true);
   });
+
+  it("serves the dashboard HTML page", async () => {
+    const res = await httpRequest(port, "/_railgate/dashboard");
+    expect(res.status).toBe(200);
+    expect(res.headers["content-type"]).toMatch(/text\/html/);
+    expect(res.body.toString()).toContain("<title>railgate</title>");
+  });
+
+  it("reports the active tunnel and its request count via the API", async () => {
+    // The earlier proxy tests drove several requests through "test".
+    const res = await httpRequest(port, "/_railgate/api/tunnels");
+    expect(res.status).toBe(200);
+    expect(res.headers["content-type"]).toMatch(/application\/json/);
+    const data = JSON.parse(res.body.toString());
+    expect(Array.isArray(data.active)).toBe(true);
+    const active = data.active.find((t: { subdomain: string }) => t.subdomain === "test");
+    expect(active).toBeTruthy();
+    expect(active.url).toBe("http://test.127.0.0.1");
+    expect(active.requestCount).toBeGreaterThan(0);
+    expect(Array.isArray(data.history)).toBe(true);
+  });
+
+  it("moves a tunnel into history when its client disconnects", async () => {
+    const ephemeral = await startMockClient(port, "gone");
+    await new Promise((r) => setTimeout(r, 50));
+    ephemeral.ws.close();
+    await new Promise((r) => setTimeout(r, 100));
+
+    const res = await httpRequest(port, "/_railgate/api/tunnels");
+    const data = JSON.parse(res.body.toString());
+    expect(data.active.some((t: { subdomain: string }) => t.subdomain === "gone")).toBe(false);
+    const closed = data.history.find((t: { subdomain: string }) => t.subdomain === "gone");
+    expect(closed).toBeTruthy();
+    expect(closed.closedAt).toBeTypeOf("number");
+  });
 });
