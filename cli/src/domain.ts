@@ -137,13 +137,20 @@ function friendlyCreateError(err: unknown): string {
  * will issue the wildcard certificate — without it the domain never routes).
  */
 function printDnsInstructions(info: CustomDomainInfo): void {
-  const rows: Array<{ type: string; name: string; value: string }> = [];
+  const rows: Array<{
+    type: string;
+    name: string;
+    value: string;
+    wildcard: boolean;
+  }> = [];
 
   for (const r of info.status.dnsRecords) {
+    const name = r.hostlabel === "" ? "@" : r.hostlabel;
     rows.push({
       type: r.recordType.replace(/^DNS_RECORD_TYPE_/, ""),
-      name: r.hostlabel === "" ? "@" : r.hostlabel,
+      name,
       value: r.requiredValue,
+      wildcard: name.startsWith("*"),
     });
   }
 
@@ -152,22 +159,44 @@ function printDnsInstructions(info: CustomDomainInfo): void {
       type: "TXT",
       name: info.status.verificationDnsHost ?? "_railway-verify",
       value: info.status.verificationToken,
+      wildcard: false,
     });
   }
 
+  // Order matters: the wildcard (`*.`) record must be created LAST. If it
+  // exists before the more specific records (_acme-challenge, _railway-verify),
+  // a resolver that looks one of them up first will cache the wildcard's
+  // synthesized answer in its place — so the specific record looks "overridden"
+  // until that cache expires (up to the record's TTL). Adding specific names
+  // first means no wildcard answer is ever cached for them. Stable sort keeps
+  // the relative order Railway returned within each group.
+  const ordered = rows
+    .map((row, i) => ({ row, i }))
+    .sort((a, b) =>
+      a.row.wildcard === b.row.wildcard ? a.i - b.i : a.row.wildcard ? 1 : -1
+    )
+    .map((x) => x.row);
+
   const zone = info.status.dnsRecords[0]?.zone ?? info.domain.replace(/^\*\./, "");
-  const wType = Math.max(4, ...rows.map((r) => r.type.length));
-  const wName = Math.max(4, ...rows.map((r) => r.name.length));
+  const wStep = String(ordered.length).length;
+  const wType = Math.max(4, ...ordered.map((r) => r.type.length));
+  const wName = Math.max(4, ...ordered.map((r) => r.name.length));
 
   const lines = [
-    `${"Type".padEnd(wType + 3)}${"Name".padEnd(wName + 3)}Value`,
-    ...rows.map(
-      (r) => `${r.type.padEnd(wType + 3)}${r.name.padEnd(wName + 3)}${r.value}`
-    ),
+    `${"".padEnd(wStep + 2)}${"Type".padEnd(wType + 3)}${"Name".padEnd(wName + 3)}Value`,
+    ...ordered.map((r, i) => {
+      const step = `${String(i + 1).padStart(wStep)}.`;
+      const base = `${step} ${r.type.padEnd(wType + 3)}${r.name.padEnd(wName + 3)}${r.value}`;
+      return r.wildcard ? `${base}   ← add this one LAST` : base;
+    }),
   ];
 
   note(
     lines.join("\n") +
+      `\n\nAdd the records in the order shown — the wildcard (\`*.\`) row goes` +
+      `\nlast. Adding it before the others lets DNS resolvers cache it in place` +
+      `\nof the _acme-challenge / verification records, which then look` +
+      `\n"overridden" until the cache expires (up to the record's TTL).` +
       `\n\nIf the Name is "@", create the record on the zone root.` +
       `\nThe TXT record proves ownership — Railway won't issue the wildcard` +
       `\ncertificate (and the domain won't route) until it's in place.`,
