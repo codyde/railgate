@@ -580,6 +580,16 @@ export function createRelay(options: RelayOptions): Relay {
             const existing = tunnels.get(subdomain)!;
             if (existing.ws.readyState !== WS_READY_OPEN) {
               tunnels.delete(subdomain);
+            } else if (msg.force) {
+              // Caller explicitly reclaims the subdomain: evict the incumbent.
+              existing.ws.send(
+                serializeMessage({
+                  type: "notice",
+                  message: `Subdomain "${subdomain}" was reclaimed by a new tunnel`,
+                })
+              );
+              existing.ws.close(1001, "Subdomain reclaimed");
+              tunnels.delete(subdomain);
             } else {
               ws.send(
                 serializeMessage({

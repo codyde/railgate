@@ -96,10 +96,11 @@ program
   .option("-r, --relay <url>", "Relay server URL (overrides saved config)")
   .option("-t, --token <value>", "Relay auth token (overrides saved config)")
   .option("-s, --subdomain <name>", "Request a specific subdomain")
+  .option("-f, --force", "Take over the subdomain even if a tunnel currently holds it")
   .action(
     async (
       port: string,
-      opts: { relay?: string; token?: string; subdomain?: string }
+      opts: { relay?: string; token?: string; subdomain?: string; force?: boolean }
     ) => {
       const localPort = parseInt(port, 10);
       if (isNaN(localPort)) {
@@ -119,7 +120,7 @@ program
         process.exit(1);
       }
 
-      await startTunnel(cfg.relayUrl, cfg.token, localPort, opts.subdomain);
+      await startTunnel(cfg.relayUrl, cfg.token, localPort, opts.subdomain, opts.force);
     }
   );
 
@@ -186,7 +187,8 @@ async function startTunnel(
   relayUrl: string,
   token: string | undefined,
   localPort: number,
-  subdomain?: string
+  subdomain?: string,
+  force?: boolean
 ): Promise<void> {
   const wsUrl = `${relayUrl}${CONTROL_PATH}`;
   const spinner = createSpinner();
@@ -257,6 +259,7 @@ async function startTunnel(
           type: "register",
           subdomain: currentSubdomain,
           protocolVersion: PROTOCOL_VERSION,
+          force,
         })
       );
     });

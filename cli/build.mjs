@@ -11,7 +11,6 @@ await build({
   format: "cjs",
   target: "node20",
   outfile: "dist/railgate.cjs",
-  external: ["@clack/prompts", "commander", "ws"],
   define: {
     __RAILGATE_VERSION__: JSON.stringify(pkg.version),
   },

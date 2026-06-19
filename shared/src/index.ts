@@ -23,6 +23,8 @@ export interface RegisterMessage {
   type: "register";
   subdomain?: string;
   protocolVersion: number;
+  /** Take over the subdomain even if a live tunnel currently holds it. */
+  force?: boolean;
 }
 
 /** Relay → client: tunnel registered. */
@@ -352,7 +354,7 @@ export function serializeMessage(msg: ControlMessage): string {
 
 export const CONTROL_PATH = "/_tunnel/connect";
 
-export const HEARTBEAT_INTERVAL_MS = 30_000;
+export const HEARTBEAT_INTERVAL_MS = 10_000;
 
 export const PROTOCOL_VERSION = 2;
 
