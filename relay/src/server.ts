@@ -439,8 +439,8 @@ export function createRelay(options: RelayOptions): Relay {
 
     const tunnel = tunnels.get(subdomain);
     if (!tunnel || tunnel.ws.readyState !== WS_READY_OPEN) {
-      if (tunnel) tunnels.delete(subdomain);
-      socket.write("HTTP/1.1 502 Bad Gateway\r\n\r\n");
+      if (tunnel && tunnels.get(subdomain) === tunnel) tunnels.delete(subdomain);
+      socket.write("HTTP/1.1 502 Bad Gateway\r\n\r\n\r\n");
       socket.destroy();
       return;
     }
@@ -579,7 +579,7 @@ export function createRelay(options: RelayOptions): Relay {
           if (subdomain && tunnels.has(subdomain)) {
             const existing = tunnels.get(subdomain)!;
             if (existing.ws.readyState !== WS_READY_OPEN) {
-              tunnels.delete(subdomain);
+              if (tunnels.get(subdomain) === existing) tunnels.delete(subdomain);
             } else if (msg.force) {
               // Caller explicitly reclaims the subdomain: evict the incumbent.
               existing.ws.send(
@@ -589,7 +589,7 @@ export function createRelay(options: RelayOptions): Relay {
                 })
               );
               existing.ws.close(1001, "Subdomain reclaimed");
-              tunnels.delete(subdomain);
+              if (tunnels.get(subdomain) === existing) tunnels.delete(subdomain);
             } else {
               ws.send(
                 serializeMessage({
@@ -745,7 +745,11 @@ export function createRelay(options: RelayOptions): Relay {
           conn.close(1001, "Tunnel disconnected");
         }
         tunnel.wsConnections.clear();
-        tunnels.delete(tunnel.subdomain);
+        // Only delete if this tunnel instance is still the current mapping,
+        // otherwise a --force reclaim has already replaced it.
+        if (tunnels.get(tunnel.subdomain) === tunnel) {
+          tunnels.delete(tunnel.subdomain);
+        }
         store.markClosed(tunnel.recordId, {
           closedAt: Date.now(),
           requestCount: tunnel.requestCount,
