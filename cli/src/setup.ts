@@ -4,7 +4,6 @@ import {
   text,
   password,
   confirm,
-  spinner,
   note,
   cancel,
   isCancel,
@@ -12,6 +11,7 @@ import {
 import { randomBytes } from "crypto";
 import { WHOAMI_PATH } from "@railgate/shared";
 import { openUrl } from "./util/open-url.js";
+import { createLoader } from "./util/loader.js";
 import { saveConfig, configPath, type RailgateConfig } from "./config.js";
 import { addDomainFlow } from "./domain.js";
 import {
@@ -148,7 +148,7 @@ async function runAutoSetup(): Promise<void> {
   );
 
   let lastBrowserUrl: string | null = null;
-  const s = spinner();
+  const s = createLoader();
   s.start("Authenticating with Railway");
 
   try {
@@ -165,7 +165,7 @@ async function runAutoSetup(): Promise<void> {
     });
 
     s.message(`Verifying relay at ${deployed.httpUrl}`);
-    const whoami = await verifyRelay(deployed.httpUrl, token, 90_000);
+    const whoami = await verifyRelay(deployed.httpUrl, token, 180_000);
     if (!whoami.ok) {
       s.stop("Verification failed");
       cancel(
@@ -266,7 +266,7 @@ async function runBrowserSetup(): Promise<void> {
 
   const { httpUrl, wsUrl } = normalizeRelayUrl(urlInput);
 
-  const s = spinner();
+  const s = createLoader();
   s.start(`Verifying ${httpUrl} (this can take up to 60s while Railway warms up)`);
   const whoami = await verifyRelay(httpUrl, token, 60_000);
   if (!whoami.ok) {
@@ -312,7 +312,7 @@ async function runManualSetup(): Promise<void> {
 
   const { httpUrl, wsUrl } = normalizeRelayUrl(urlInput);
 
-  const s = spinner();
+  const s = createLoader();
   s.start(`Verifying ${httpUrl}`);
   const whoami = await verifyRelay(httpUrl, token, 5_000);
   if (!whoami.ok) {

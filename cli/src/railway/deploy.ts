@@ -261,7 +261,7 @@ async function pollForService(
   projectId: string,
   opts: GqlOptions
 ): Promise<{ id: string; name: string }> {
-  const maxAttempts = 30;
+  const maxAttempts = 120; // ~3min
   const delayMs = 1500;
   for (let i = 0; i < maxAttempts; i++) {
     const service = (await listServices(projectId, opts))[0];
@@ -273,13 +273,13 @@ async function pollForService(
 
 /**
  * Poll `workflowStatus` until the workflow reports Complete, Error, or NotFound.
- * Mirrors the cadence Railway's own CLI uses (120 × ~1.5s = ~3min ceiling).
+ * Railway builds (npm install + tsc + Docker) can run long, so allow ~8min.
  */
 async function waitForWorkflow(
   workflowId: string,
   opts: GqlOptions
 ): Promise<void> {
-  const maxAttempts = 120;
+  const maxAttempts = 320;
   const delayMs = 1500;
   for (let i = 0; i < maxAttempts; i++) {
     const { workflowStatus } = await gql<WorkflowStatusResult>(
@@ -314,7 +314,7 @@ async function pollForDomain(
   serviceId: string,
   opts: GqlOptions
 ): Promise<string> {
-  const maxAttempts = 30;
+  const maxAttempts = 120; // ~3min
   const delayMs = 1500;
   for (let i = 0; i < maxAttempts; i++) {
     const { domains } = await gql<DomainsResult>(
