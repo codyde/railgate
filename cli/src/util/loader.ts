@@ -2,8 +2,12 @@
 // with a bright gradient highlight that sweeps from the front of the text to
 // the end. Falls back to plain line printing when stdout isn't a TTY.
 //
-// The public surface (start / message / stop) mirrors @clack/prompts' spinner
-// so it can be dropped into the existing setup flow.
+// The animated line is always a SINGLE line, redrawn in place with a carriage
+// return + clear-line. Long/static content (e.g. an auth URL that would wrap)
+// is printed once above the spinner via note(), never animated — repainting
+// wrapping lines is what corrupts the terminal.
+//
+// The public surface mirrors @clack/prompts' spinner so it drops into setup.
 
 const RESET = "\x1b[0m";
 const DIM = "\x1b[2m";
@@ -15,9 +19,15 @@ export const SPINNER_FRAMES = ["◰", "◳", "◲", "◱"];
 const BASE: [number, number, number] = [110, 118, 140]; // dim base text
 const PEAK: [number, number, number] = [180, 225, 255]; // bright sweep head
 const BAND = 7; // half-width of the highlight, in characters
+const PEAK_COLOR = `\x1b[38;2;${PEAK[0]};${PEAK[1]};${PEAK[2]}m`;
 
 function lerp(a: number, b: number, t: number): number {
   return Math.round(a + (b - a) * t);
+}
+
+function firstLine(s: string): string {
+  const i = s.indexOf("\n");
+  return i === -1 ? s : s.slice(0, i);
 }
 
 /**
@@ -46,6 +56,8 @@ export function paintShimmer(text: string, head: number, band = BAND): string {
 export interface Loader {
   start(message?: string): void;
   message(message: string): void;
+  /** Print a static block above the spinner (for long/wrapping content). */
+  note(block: string): void;
   stop(message?: string, code?: number): void;
 }
 
@@ -57,49 +69,26 @@ export function createLoader(): Loader {
   let text = "";
   let frame = 0;
   let head = -BAND;
-  let prevLineCount = 0;
-  let lastPlain = "";
-
-  const PEAK_COLOR = `\x1b[38;2;${PEAK[0]};${PEAK[1]};${PEAK[2]}m`;
-
-  function clearRendered(): void {
-    for (let i = prevLineCount - 1; i > 0; i--) {
-      out.write("\x1b[2K\x1b[1A");
-    }
-    out.write("\x1b[2K\r");
-    prevLineCount = 0;
-  }
 
   function render(): void {
-    const lines = text.split("\n");
-    const spinner = `${PEAK_COLOR}${SPINNER_FRAMES[frame % SPINNER_FRAMES.length]}${RESET}`;
-    const first = `${GUTTER}${spinner} ${paintShimmer(lines[0] ?? "", head)}`;
-    const rest = lines.slice(1).map((l) => `${GUTTER}${DIM}${l}${RESET}`);
-    const composed = [first, ...rest].join("\n");
-
-    clearRendered();
-    out.write(composed);
-    prevLineCount = lines.length;
+    const line = firstLine(text);
+    const glyph = `${PEAK_COLOR}${SPINNER_FRAMES[frame % SPINNER_FRAMES.length]}${RESET}`;
+    out.write(`\r\x1b[2K${GUTTER}${glyph} ${paintShimmer(line, head)}`);
 
     frame++;
     head += 0.85;
-    const span = (lines[0] ?? "").length + BAND;
-    if (head > span) head = -BAND;
+    if (head > line.length + BAND) head = -BAND;
   }
 
   function start(message = ""): void {
     text = message;
     if (!isTty) {
-      if (message) {
-        lastPlain = message;
-        out.write(`${GUTTER}${message}\n`);
-      }
+      if (message) out.write(`${GUTTER}${message}\n`);
       return;
     }
     out.write("\x1b[?25l"); // hide cursor
     frame = 0;
     head = -BAND;
-    prevLineCount = 0;
     render();
     timer = setInterval(render, 90);
     timer.unref?.();
@@ -107,12 +96,21 @@ export function createLoader(): Loader {
 
   function message(next: string): void {
     text = next;
+    if (!isTty && next) out.write(`${GUTTER}${next}\n`);
+  }
+
+  function note(block: string): void {
+    const lines = block
+      .split("\n")
+      .map((l) => `${GUTTER}${DIM}${l}${RESET}`)
+      .join("\n");
     if (!isTty) {
-      if (next && next !== lastPlain) {
-        lastPlain = next;
-        out.write(`${GUTTER}${next}\n`);
-      }
+      out.write(`${lines}\n`);
+      return;
     }
+    out.write("\r\x1b[2K"); // drop the current spinner line
+    out.write(`${lines}\n`); // print the static block permanently
+    render(); // redraw the spinner on the fresh line below
   }
 
   function stop(message?: string, code = 0): void {
@@ -122,17 +120,16 @@ export function createLoader(): Loader {
     }
     const final = message ?? text;
     if (!isTty) {
-      if (final) out.write(`${GUTTER}${final}\n`);
+      if (final) out.write(`${GUTTER}${firstLine(final)}\n`);
       return;
     }
-    clearRendered();
-    const symbol =
-      code === 0 ? "\x1b[32m✔\x1b[0m" : "\x1b[31m✖\x1b[0m";
-    out.write(`${GUTTER}${symbol} ${final}\n`);
+    out.write("\r\x1b[2K");
+    const symbol = code === 0 ? "\x1b[32m✔\x1b[0m" : "\x1b[31m✖\x1b[0m";
+    out.write(`${GUTTER}${symbol} ${firstLine(final)}\n`);
     out.write("\x1b[?25h"); // show cursor
   }
 
-  return { start, message, stop };
+  return { start, message, note, stop };
 }
 
 // Make sure a crash mid-spin never leaves the user's cursor hidden.

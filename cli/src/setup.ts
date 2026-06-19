@@ -156,11 +156,11 @@ async function runAutoSetup(): Promise<void> {
       onPhase: (msg) => s.message(msg),
       onPromptUrl: (url) => {
         lastBrowserUrl = url;
-        // Pause the spinner long enough to surface the URL in case the
-        // browser launch failed silently (SSH session, headless WSL, etc.).
-        s.message(
-          `Opening Railway to authorize...\n  If the browser didn't open, visit:\n  ${url}`
-        );
+        // Surface the URL statically (it's long and wraps) in case the browser
+        // launch failed silently (SSH session, headless WSL, etc.), then keep
+        // a short animated status line going.
+        s.note(`Opening Railway to authorize in your browser.\nIf it didn't open, visit:\n${url}`);
+        s.message("Waiting for Railway authorization");
       },
     });
 
