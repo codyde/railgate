@@ -1,6 +1,6 @@
 {
   "name": "railgate",
-  "version": "0.4.2",
+  "version": "0.4.3",
   "description": "Self-hostable localhost tunnel — deploy a Railway relay in one command, then expose any port over a public URL.",
   "type": "module",
   "bin": {

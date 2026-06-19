@@ -44,6 +44,21 @@ function cleanErrorBody(body: string): string {
   return trimmed.length > 300 ? trimmed.slice(0, 300) + "…" : trimmed;
 }
 
+// Railway sometimes reports "Not Authorized" for a perfectly-authorized read
+// right after a resource is created — the permission state hasn't propagated
+// yet. A token refresh doesn't help (the token is fine), so for reads we retry
+// a few times with backoff to ride out the lag.
+const PROPAGATION_RETRY_ATTEMPTS = 3;
+const PROPAGATION_RETRY_BASE_MS = 1000;
+
+function hasAuthErrors(errors: GqlError[] | undefined): boolean {
+  return !!errors?.some(
+    (e) =>
+      /not authorized|unauthorized/i.test(e.message) ||
+      e.extensions?.code === "UNAUTHENTICATED"
+  );
+}
+
 export interface GqlOptions {
   /** Surface the auth URL when a fresh login is required. */
   onPromptUrl?: (url: string) => void;
@@ -79,11 +94,23 @@ export async function gql<T>(
   }
 }
 
+async function readJsonOrThrow<T>(
+  res: Response
+): Promise<{ data?: T; errors?: GqlError[] }> {
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new HttpError(res.status, cleanErrorBody(body));
+  }
+  return (await res.json()) as { data?: T; errors?: GqlError[] };
+}
+
 async function gqlOnce<T>(
   query: string,
   variables: Record<string, unknown>,
   opts: GqlOptions
 ): Promise<T> {
+  const isMutation = query.trimStart().startsWith("mutation");
+
   let token = await getAccessToken(opts);
   let res = await postGql(token, query, variables);
   if (res.status === 401) {
@@ -91,28 +118,33 @@ async function gqlOnce<T>(
     token = await refreshOrRelogin(opts);
     res = await postGql(token, query, variables);
   }
-  if (!res.ok) {
-    const body = await res.text().catch(() => "");
-    throw new HttpError(res.status, cleanErrorBody(body));
-  }
-  const payload = (await res.json()) as { data?: T; errors?: GqlError[] };
-  if (payload.errors && payload.errors.length > 0) {
-    const isAuth = payload.errors.some(
-      (e) => /not authorized|unauthorized/i.test(e.message) || e.extensions?.code === "UNAUTHENTICATED"
-    );
-    if (isAuth) {
-      // Some Railway endpoints return 200 with an auth error in the body.
-      const fresh = await refreshOrRelogin(opts);
-      const retry = await postGql(fresh, query, variables);
-      const retryPayload = (await retry.json()) as { data?: T; errors?: GqlError[] };
-      if (retryPayload.errors && retryPayload.errors.length > 0) {
-        throw new GraphQLError(retryPayload.errors);
+  let payload = await readJsonOrThrow<T>(res);
+
+  // Some Railway endpoints return 200 with an auth error in the body.
+  if (hasAuthErrors(payload.errors)) {
+    token = await refreshOrRelogin(opts);
+    res = await postGql(token, query, variables);
+    payload = await readJsonOrThrow<T>(res);
+
+    // The token is now fresh; a lingering "Not Authorized" on a read is
+    // permission propagation, not a token problem. Retry with backoff.
+    // Mutations are never looped — the server may have executed them.
+    if (!isMutation) {
+      for (
+        let i = 0;
+        hasAuthErrors(payload.errors) && i < PROPAGATION_RETRY_ATTEMPTS;
+        i++
+      ) {
+        await new Promise((r) =>
+          setTimeout(r, PROPAGATION_RETRY_BASE_MS * (i + 1))
+        );
+        res = await postGql(token, query, variables);
+        payload = await readJsonOrThrow<T>(res);
       }
-      if (!retryPayload.data) {
-        throw new Error("Railway GraphQL returned no data");
-      }
-      return retryPayload.data;
     }
+  }
+
+  if (payload.errors && payload.errors.length > 0) {
     throw new GraphQLError(payload.errors);
   }
   if (!payload.data) {

@@ -137,14 +137,22 @@ export async function deployRailgateRelay(
 
     if (workflowId) {
       progress.onPhase?.("Waiting for build to finish (up to 2 minutes)");
-      await waitForWorkflow(workflowId, gqlOpts);
+      try {
+        await waitForWorkflow(workflowId, gqlOpts);
+      } catch {
+        // Railway intermittently returns "Not Authorized"/transient errors for
+        // workflowStatus on a freshly-created project even though the deploy is
+        // proceeding fine. The service and domain appearing are the real
+        // success signal, so fall through to polling for those instead of
+        // aborting the whole setup.
+        progress.onPhase?.(
+          "Couldn't read build status — waiting for the service to come up"
+        );
+      }
     }
 
     progress.onPhase?.("Discovering service domain");
-    const service = (await listServices(projectCreate.id, gqlOpts))[0];
-    if (!service) {
-      throw new Error("Deploy reported success but the project has no services");
-    }
+    const service = await pollForService(projectCreate.id, gqlOpts);
 
     const baseDomain = await pollForDomain(
       projectCreate.id,
@@ -242,6 +250,25 @@ async function listServices(
     opts
   );
   return project.services.edges.map((e) => e.node);
+}
+
+/**
+ * The service can lag a few seconds behind the deploy workflow (and we may
+ * reach here without having confirmed the workflow at all). Poll until one
+ * shows up rather than failing on a single empty read.
+ */
+async function pollForService(
+  projectId: string,
+  opts: GqlOptions
+): Promise<{ id: string; name: string }> {
+  const maxAttempts = 30;
+  const delayMs = 1500;
+  for (let i = 0; i < maxAttempts; i++) {
+    const service = (await listServices(projectId, opts))[0];
+    if (service) return service;
+    await new Promise((r) => setTimeout(r, delayMs));
+  }
+  throw new Error("Deploy reported success but the project has no services");
 }
 
 /**
